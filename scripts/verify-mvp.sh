@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT"
+
+ADDR=${XDP_API_ADDR:-127.0.0.1:18080}
+BASE=${BASE:-http://$ADDR}
+GOCACHE=${GOCACHE:-"$ROOT/.cache/go-build"}
+LOG=${XDP_API_LOG:-/tmp/xdp-api-verify.log}
+BIN=${XDP_API_BIN:-"$ROOT/build/verify/xdp-api"}
+
+mkdir -p "$GOCACHE"
+mkdir -p "$(dirname "$BIN")"
+rm -f "$LOG"
+
+if curl -fsS "$BASE/healthz" >/dev/null 2>&1; then
+  printf 'target address already has a healthy API: %s\n' "$BASE" >&2
+  printf 'stop the existing service or set XDP_API_ADDR to another host:port.\n' >&2
+  exit 1
+fi
+
+printf '== test ==\n'
+GOCACHE="$GOCACHE" go test ./...
+
+printf '\n== build ==\n'
+GOCACHE="$GOCACHE" go build ./cmd/...
+GOCACHE="$GOCACHE" go build -o "$BIN" ./cmd/xdp-api
+
+printf '\n== start api ==\n'
+XDP_MYSQL_DISABLED=true XDP_API_ADDR="$ADDR" "$BIN" >"$LOG" 2>&1 &
+pid=$!
+
+cleanup() {
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+for i in $(seq 1 60); do
+  if curl -fsS "$BASE/healthz" >/dev/null 2>&1; then
+    printf 'api ready: %s\n' "$BASE"
+    break
+  fi
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    cat "$LOG"
+    exit 1
+  fi
+  if [ "$i" = 60 ]; then
+    cat "$LOG"
+    exit 1
+  fi
+  sleep 1
+done
+
+printf '\n== acceptance ==\n'
+BASE="$BASE" bash "$ROOT/scripts/acceptance.sh"
+
+printf '\nMVP verification passed.\n'

@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XDP 顶部导航原型</title>
+  <style>
+    :root {
+      --bg: #eef4f7;
+      --bg-2: #f8fbfc;
+      --ink: #1f2d3d;
+      --muted: #657589;
+      --line: #d9e2ea;
+      --topbar: #18212a;
+      --surface: rgba(255, 255, 255, 0.94);
+      --surface-soft: #f8fbfd;
+      --primary: #13bfb4;
+      --primary-dark: #0f8f89;
+      --blue: #2878b8;
+      --green: #28b76f;
+      --shadow: 0 18px 48px rgba(29, 49, 70, 0.12);
+      --sans: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: var(--sans);
+      background:
+        repeating-linear-gradient(90deg, transparent 0 94px, rgba(23, 129, 138, 0.08) 95px, transparent 96px),
+        repeating-linear-gradient(0deg, transparent 0 128px, rgba(40, 120, 184, 0.055) 129px, transparent 130px),
+        linear-gradient(135deg, var(--bg) 0%, var(--bg-2) 46%, #edf5f3 100%);
+    }
+
+    button,
+    input,
+    select,
+    textarea { font: inherit; }
+
+    button { cursor: pointer; }
+
+    .page {
+      width: min(1500px, calc(100vw - 44px));
+      margin: 0 auto;
+      padding: 22px 0 56px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 16px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 62px;
+      border: 1px solid #24313d;
+      border-radius: 999px;
+      padding: 0 18px 0 24px;
+      background: var(--topbar);
+      box-shadow: 0 12px 28px rgba(24, 33, 42, 0.22);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex: 0 0 auto;
+      color: #edf6fb;
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      color: #fff;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--primary), var(--blue));
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 10px 24px rgba(19, 191, 180, 0.28);
+    }
+
+    .topbar-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 4px;
+      margin-right: auto;
+    }
+
+    .topbar-nav button {
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: #c8d4df;
+      background: transparent;
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .topbar-nav button.active,
+    .topbar-nav button:hover {
+      color: #fff;
+      background: rgba(19, 191, 180, 0.18);
+    }
+
+    .user {
+      color: #edf6fb;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .logout {
+      border: 1px solid rgba(19, 191, 180, 0.38);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: #e7fffb;
+      background: rgba(19, 191, 180, 0.12);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .workspace {
+      margin-top: 28px;
+    }
+
+    .main-panel,
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .main-panel {
+      min-width: 0;
+      padding: 24px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .panel-header h2 {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0;
+      color: #162635;
+      font-size: 30px;
+      letter-spacing: -0.04em;
+    }
+
+    .page-icon {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      color: #fff;
+      font: 800 11px var(--mono);
+      letter-spacing: 0.04em;
+      background: linear-gradient(135deg, #0fb7a9, #28b76f);
+      box-shadow: 0 10px 24px rgba(19, 191, 180, 0.2);
+    }
+
+    .badge,
+    .count {
+      border: 1px solid #b9e8e4;
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: #08776f;
+      background: #e4f8f5;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: minmax(380px, 0.92fr) minmax(520px, 1.08fr);
+      gap: 18px;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 18px;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 16px;
+      color: #1f2d3d;
+      font-weight: 800;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .form-grid label {
+      display: grid;
+      gap: 8px;
+      color: #344558;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .field,
+    .select,
+    textarea {
+      width: 100%;
+      border: 1px solid #cfd9e3;
+      border-radius: 14px;
+      outline: none;
+      color: #1c2c3d;
+      background: #fff;
+    }
+
+    .field,
+    .select {
+      height: 44px;
+      padding: 0 16px;
+    }
+
+    textarea {
+      min-height: 106px;
+      padding: 12px 14px;
+      resize: vertical;
+      font-family: var(--mono);
+    }
+
+    .field:focus,
+    .select:focus,
+    textarea:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(19, 191, 180, 0.14);
+    }
+
+    .plugin-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .plugin-card {
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid #d6e1e9;
+      border-radius: 18px;
+      color: #243447;
+      background: #fff;
+      padding: 14px;
+      font-weight: 800;
+    }
+
+    .plugin-card.active {
+      border-color: var(--primary);
+      color: #0d4d4b;
+      background: #e8fbf8;
+      box-shadow: 0 10px 28px rgba(19, 191, 180, 0.16);
+    }
+
+    .plugin-icon {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      color: #fff;
+      background: linear-gradient(135deg, #0fb7a9, #28b76f);
+      box-shadow: 0 8px 20px rgba(40, 120, 184, 0.16);
+      font: 800 12px var(--mono);
+    }
+
+    .plugin-icon.kafka {
+      background: linear-gradient(135deg, #2878b8, #38bdf8);
+    }
+
+    .two {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .btn {
+      min-height: 40px;
+      border: 0;
+      border-radius: 999px;
+      padding: 0 16px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--primary), var(--green));
+      box-shadow: 0 12px 24px rgba(19, 191, 180, 0.22);
+      font-weight: 700;
+    }
+
+    .btn.ghost {
+      border: 1px solid #b8e5e1;
+      color: #08776f;
+      background: #eefbf9;
+      box-shadow: none;
+    }
+
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      color: #223246;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid #e5ebf1;
+      padding: 12px 10px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      color: #405168;
+      background: #edf3f7;
+    }
+
+    tr:hover td {
+      background: #f1fbfa;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: #08776f;
+      background: #e4f8f5;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .status::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--green);
+    }
+
+    .note {
+      margin: 0 0 16px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    @media (max-width: 980px) {
+      .topbar {
+        align-items: flex-start;
+        border-radius: 24px;
+        padding: 14px;
+      }
+
+      .topbar-nav {
+        flex-wrap: wrap;
+      }
+
+      .user,
+      .logout {
+        display: none;
+      }
+
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        width: min(100% - 24px, 1500px);
+        padding-top: 14px;
+      }
+
+      .topbar {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      .topbar-nav {
+        margin-left: 0;
+      }
+
+      .two,
+      .plugin-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">X</span>
+        <span>XDP&gt;Console</span>
+      </div>
+      <nav class="topbar-nav" aria-label="主模块导航">
+        <button class="active" type="button">采集配置</button>
+        <button type="button">解析配置</button>
+        <button type="button">索引配置</button>
+        <button type="button">搜索页</button>
+      </nav>
+      <div class="user">Administrator</div>
+      <button class="logout" type="button">退出</button>
+    </header>
+
+    <section class="workspace">
+      <section class="main-panel">
+        <div class="panel-header">
+          <h2><span class="page-icon">IN</span>采集配置</h2>
+          <span class="badge">Syslog / Kafka</span>
+        </div>
+        <p class="note">左侧模块导航已去除，顶部导航成为唯一模块入口。主内容区直接扩展为全宽工作台，适合展示采集、解析、索引和搜索的大表单与结果表格。</p>
+
+        <div class="content-grid">
+          <article class="card">
+            <div class="card-head">
+              <span>新增采集</span>
+              <button class="btn ghost" type="button">清空</button>
+            </div>
+            <form class="form-grid">
+              <label>设备名称
+                <input class="field" placeholder="请输入设备名称" value="firewall-syslog">
+              </label>
+              <label>状态
+                <select class="select">
+                  <option>active</option>
+                  <option>disabled</option>
+                </select>
+              </label>
+              <div class="plugin-grid">
+                <button class="plugin-card active" type="button"><span class="plugin-icon">SYS</span>Syslog</button>
+                <button class="plugin-card" type="button"><span class="plugin-icon kafka">K</span>Kafka</button>
+              </div>
+              <div class="two">
+                <label>监听端口
+                  <input class="field" value="5514">
+                </label>
+                <label>传输协议
+                  <select class="select">
+                    <option>UDP</option>
+                    <option>TCP</option>
+                  </select>
+                </label>
+              </div>
+              <label>字段编码
+                <select class="select">
+                  <option>UTF-8</option>
+                  <option>GBK</option>
+                </select>
+              </label>
+              <label>日志筛选正则
+                <textarea placeholder="开启日志筛选时填写正则，符合条件的数据进入解析与存储">action=(allow|deny)</textarea>
+              </label>
+              <div class="actions">
+                <button class="btn" type="button">保存采集</button>
+                <button class="btn ghost" type="button">测试端口</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <span>采集配置列表</span>
+              <span class="count">2</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>设备名称</th>
+                    <th>数据源类型</th>
+                    <th>监听端口</th>
+                    <th>状态</th>
+                    <th>最近写入</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>firewall-syslog</td>
+                    <td>Syslog</td>
+                    <td>UDP / 5514</td>
+                    <td><span class="status">active</span></td>
+                    <td>2026-06-29 21:44:12</td>
+                    <td>修改 / 停止 / 删除</td>
+                  </tr>
+                  <tr>
+                    <td>app-kafka</td>
+                    <td>Kafka</td>
+                    <td>PLAINTEXT / app-log</td>
+                    <td><span class="status">active</span></td>
+                    <td>2026-06-29 21:40:03</td>
+                    <td>修改 / 停止 / 删除</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,30 @@
+api_version: xdp.io/v1alpha1
+kind: Pipeline
+metadata:
+  id: mvp-json-pipeline
+  name: MVP JSON Pipeline
+spec:
+  source:
+    id: http-json
+    type: input
+    plugin: http-input
+    version: 1.0.0
+    config:
+      path: /api/v1/ingest/json
+      method: POST
+  stages:
+    - id: parse-json
+      type: parser
+      plugin: json-parser
+      version: 1.0.0
+      config:
+        source: raw
+        target: fields
+      on_error:
+        action: dead_letter
+  outputs:
+    - id: memory-search
+      plugin: memory-output
+      version: 1.0.0
+      config:
+        index: app

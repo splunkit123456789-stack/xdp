@@ -1,0 +1,1970 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XDP 全套原型 - 登录页色系</title>
+  <style>
+    :root {
+      --bg: #070925;
+      --bg2: #12091f;
+      --ink: #f8fbff;
+      --muted: #a5b2d1;
+      --line: rgba(151, 173, 255, 0.18);
+      --glass: rgba(10, 15, 45, 0.78);
+      --glass2: rgba(19, 27, 72, 0.82);
+      --orange: #ffad00;
+      --coral: #ff6848;
+      --pink: #ff1f85;
+      --cyan: #55dfff;
+      --green: #67f28a;
+      --danger: #ff5f61;
+      --radius: 22px;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+      --sans: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at 74% 8%, rgba(255, 31, 133, 0.24), transparent 24rem),
+        radial-gradient(circle at 10% 28%, rgba(85, 223, 255, 0.15), transparent 26rem),
+        linear-gradient(115deg, #071348 0%, #080a2b 44%, #15061e 100%);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background:
+        repeating-linear-gradient(90deg, transparent 0 78px, rgba(255, 115, 49, 0.13) 79px, transparent 81px),
+        repeating-linear-gradient(0deg, transparent 0 138px, rgba(85, 223, 255, 0.045) 139px, transparent 141px);
+      opacity: 0.58;
+      pointer-events: none;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .page {
+      width: min(1500px, calc(100vw - 44px));
+      margin: 0 auto;
+      padding: 22px 0 56px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 16px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      min-height: 62px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 18px 0 24px;
+      background: rgba(5, 8, 30, 0.66);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 58px rgba(0, 0, 0, 0.3);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-right: auto;
+      color: #fff;
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, var(--orange), var(--pink));
+      color: #12071c;
+      font-weight: 600;
+      box-shadow: 0 0 30px rgba(255, 78, 86, 0.38);
+    }
+
+    .topbar-link {
+      border: 0;
+      background: transparent;
+      color: #b7c2df;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .topbar-link:hover {
+      color: #fff;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 560px;
+      gap: 28px;
+      align-items: stretch;
+      padding: 58px 0 28px;
+    }
+
+    .title-card,
+    .stat-card,
+    .workspace {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(20, 29, 76, 0.82), rgba(6, 10, 35, 0.74));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .title-card {
+      padding: 34px;
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .title-card::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      bottom: -90px;
+      width: 360px;
+      height: 260px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 60px;
+      background: linear-gradient(135deg, rgba(255, 173, 0, 0.12), rgba(255, 31, 133, 0.14));
+      transform: rotate(18deg);
+    }
+
+    .eyebrow {
+      color: #c8d4f5;
+      font: 700 13px var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 12px 0 0;
+      font-size: clamp(86px, 12vw, 174px);
+      line-height: 0.82;
+      letter-spacing: -0.08em;
+    }
+
+    .gradient-text {
+      background: linear-gradient(90deg, var(--orange), var(--coral) 46%, var(--pink));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      text-shadow: 0 18px 70px rgba(255, 54, 117, 0.26);
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .chip {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      color: #e8eeff;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .stat-card {
+      padding: 22px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      height: 100%;
+    }
+
+    .stat {
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.055);
+      padding: 18px;
+    }
+
+    .stat b {
+      display: block;
+      margin-bottom: 4px;
+      color: #fff;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 250px minmax(0, 1fr);
+      min-height: 760px;
+      margin-top: 30px;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: rgba(2, 4, 18, 0.32);
+      padding: 22px;
+    }
+
+    .sidebar-title {
+      margin: 0 0 16px;
+      color: #7f8fb7;
+      font: 700 12px var(--mono);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .side-nav {
+      display: grid;
+      gap: 10px;
+    }
+
+    .side-nav button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 14px;
+      padding: 13px 14px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #c9d4f0;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .side-nav button.active {
+      color: #13091f;
+      background: linear-gradient(90deg, var(--orange), var(--pink));
+      border-color: transparent;
+    }
+
+    .count {
+      min-width: 24px;
+      border-radius: 999px;
+      padding: 2px 7px;
+      background: rgba(255, 255, 255, 0.12);
+      color: inherit;
+      font: 700 12px var(--mono);
+      text-align: center;
+    }
+
+    .main {
+      padding: 24px;
+      min-width: 0;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+      animation: rise 220ms ease-out both;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .panel-header h2 {
+      margin: 0;
+      font-size: 42px;
+      line-height: 0.95;
+      letter-spacing: -0.05em;
+    }
+
+    .badge {
+      border: 1px solid rgba(103, 242, 138, 0.24);
+      border-radius: 999px;
+      background: rgba(103, 242, 138, 0.11);
+      color: #b8ffc8;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: 390px minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.055);
+      overflow: hidden;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .card-body {
+      padding: 18px;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: #bdc8e5;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .field,
+    .select,
+    textarea {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      padding: 0 13px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 94px;
+      padding: 12px 13px;
+      resize: vertical;
+      font-family: var(--mono);
+      line-height: 1.45;
+    }
+
+    .two {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .unit-field {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 54px;
+      align-items: center;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .unit-field .field {
+      min-height: 44px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .unit-field span {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      border-left: 1px solid rgba(255, 255, 255, 0.12);
+      color: #7ee9ff;
+      font: 800 12px var(--mono);
+    }
+
+    .conditional-panel[hidden] {
+      display: none;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .btn {
+      min-height: 42px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 0 16px;
+      color: #13091f;
+      background: linear-gradient(90deg, var(--orange), var(--pink));
+      font-weight: 750;
+      box-shadow: 0 16px 42px rgba(255, 80, 86, 0.22);
+    }
+
+    .btn.ghost {
+      color: #e8eeff;
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(255, 255, 255, 0.14);
+      box-shadow: none;
+    }
+
+    .btn.danger {
+      color: #fff;
+      background: rgba(255, 95, 97, 0.18);
+      border-color: rgba(255, 95, 97, 0.38);
+      box-shadow: none;
+    }
+
+    .table-wrap {
+      overflow: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+      padding: 14px 13px;
+      text-align: left;
+      color: #dfe8ff;
+      font-size: 13px;
+      vertical-align: middle;
+    }
+
+    th {
+      color: #8c9cc4;
+      background: rgba(255, 255, 255, 0.045);
+      font-weight: 750;
+    }
+
+    td code {
+      color: #7ee9ff;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .multiline-code {
+      display: block;
+      white-space: pre-wrap;
+    }
+
+    td code.muted-code {
+      color: #7f8caf;
+      font-size: 11px;
+    }
+
+    .row-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .link-btn {
+      border: 0;
+      background: transparent;
+      color: #7ee9ff;
+      padding: 0;
+      font-weight: 750;
+    }
+
+    .link-btn.delete {
+      color: #ff9c9d;
+    }
+
+    .search-layout {
+      display: grid;
+      gap: 18px;
+    }
+
+    .search-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 190px 104px 104px;
+      gap: 10px;
+    }
+
+    .search-box {
+      display: flex;
+      align-items: center;
+      min-height: 50px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      padding: 0 14px;
+      font: 750 14px/1.2 var(--mono);
+    }
+
+    .time-help {
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.045);
+      color: #aebbe0;
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .time-help code {
+      color: #7ee9ff;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .timeline {
+      display: flex;
+      align-items: flex-end;
+      gap: 9px;
+      height: 104px;
+      padding: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .bar {
+      flex: 1;
+      min-width: 10px;
+      border-radius: 999px 999px 0 0;
+      background: linear-gradient(180deg, var(--pink), var(--orange));
+      box-shadow: 0 0 16px rgba(255, 31, 133, 0.24);
+    }
+
+    .status-line {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .form-hint {
+      border: 1px dashed rgba(255, 255, 255, 0.16);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.04);
+      color: #aebbe0;
+      padding: 12px 14px;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .form-hint code {
+      color: #7ee9ff;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .advanced-panel {
+      border: 1px solid rgba(85, 223, 255, 0.18);
+      border-radius: 16px;
+      background: linear-gradient(135deg, rgba(85, 223, 255, 0.08), rgba(255, 31, 133, 0.045));
+      padding: 12px;
+    }
+
+    .advanced-panel summary {
+      color: #dff8ff;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 800;
+      list-style-position: inside;
+    }
+
+    .advanced-panel .advanced-body {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .props-editor {
+      min-height: 150px;
+      white-space: pre;
+    }
+
+    .route-note {
+      color: #aebbe0;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .route-note code {
+      color: #7ee9ff;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .parser-mode-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .parser-card {
+      min-height: 98px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.055);
+      color: #dfe8ff;
+      padding: 14px 12px;
+      text-align: center;
+      font-weight: 750;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .parser-card.active {
+      color: #13091f;
+      border-color: transparent;
+      background: linear-gradient(135deg, rgba(255, 173, 0, 0.95), rgba(255, 31, 133, 0.95));
+      transform: translateY(-2px);
+    }
+
+    .parser-icon {
+      display: block;
+      margin-bottom: 8px;
+      font: 850 20px var(--mono);
+      letter-spacing: -0.05em;
+    }
+
+    .param-panel {
+      display: none;
+      gap: 12px;
+    }
+
+    .param-panel.active {
+      display: grid;
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .preview-box {
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.04);
+      overflow: hidden;
+    }
+
+    .preview-box table {
+      min-width: 100%;
+    }
+
+    .preview-box th,
+    .preview-box td {
+      padding: 10px 12px;
+    }
+
+    .search-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .saved-summary {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      color: #dfe8ff;
+    }
+
+    .saved-summary strong {
+      font-size: 14px;
+      letter-spacing: -0.02em;
+    }
+
+    .saved-summary span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .saved-drawer {
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.045);
+      overflow: hidden;
+    }
+
+    .saved-drawer[hidden] {
+      display: none;
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+      color: #fff;
+      font-weight: 750;
+    }
+
+    .drawer-body {
+      padding: 0;
+    }
+
+    .compact-table {
+      min-width: 100%;
+    }
+
+    .compact-table th,
+    .compact-table td {
+      padding: 11px 12px;
+    }
+
+    .result-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .result-meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+
+    .mode-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(103, 242, 138, 0.11);
+      color: #bbffd0;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .result-table {
+      min-width: 860px;
+    }
+
+    .search-box:focus,
+    .field:focus,
+    .select:focus,
+    textarea:focus {
+      border-color: rgba(85, 223, 255, 0.54);
+      box-shadow: 0 0 0 3px rgba(85, 223, 255, 0.12);
+    }
+
+    @media (max-width: 1120px) {
+      .workspace,
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .side-nav {
+        grid-template-columns: repeat(4, minmax(130px, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100vw - 28px, 1500px);
+      }
+
+      .topbar {
+        border-radius: 22px;
+        flex-wrap: wrap;
+        padding: 16px;
+      }
+
+      .brand {
+        width: 100%;
+      }
+
+      h1 {
+        font-size: clamp(76px, 23vw, 120px);
+      }
+
+      .stats,
+      .two,
+      .parser-mode-grid,
+      .search-row,
+      .side-nav {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <nav class="topbar">
+      <div class="brand"><span class="brand-mark">X</span><span>XDP&gt;Console</span></div>
+      <button class="topbar-link" type="button" onclick="showTab('inputs')">采集</button>
+      <button class="topbar-link" type="button" onclick="showTab('rules')">解析</button>
+      <button class="topbar-link" type="button" onclick="showTab('indexes')">索引</button>
+      <button class="topbar-link" type="button" onclick="showTab('search')">搜索</button>
+    </nav>
+
+    <section class="workspace" id="workspace">
+      <aside class="sidebar">
+        <p class="sidebar-title">MVP Console</p>
+        <div class="side-nav">
+          <button class="active" type="button" data-tab="inputs" onclick="showTab('inputs')">采集配置 <span class="count" id="navInputs">0</span></button>
+          <button type="button" data-tab="rules" onclick="showTab('rules')">解析配置 <span class="count" id="navRules">0</span></button>
+          <button type="button" data-tab="indexes" onclick="showTab('indexes')">索引配置 <span class="count" id="navIndexes">0</span></button>
+          <button type="button" data-tab="search" onclick="showTab('search')">搜索页 <span class="count" id="navSearches">0</span></button>
+        </div>
+      </aside>
+
+      <section class="main">
+        <div id="tab-inputs" class="tab-panel active">
+          <div class="panel-header"><h2>采集配置</h2><span class="badge">Syslog / Kafka</span></div>
+          <div class="content-grid">
+            <div class="card">
+              <div class="card-head"><span id="inputFormTitle">新增采集</span><button class="btn ghost" type="button" onclick="resetInputForm()">清空</button></div>
+              <div class="card-body">
+                <form id="inputForm" class="form-grid">
+                  <input type="hidden" name="id">
+                  <input type="hidden" name="plugin" id="inputPlugin" value="Syslog">
+                  <label>设备名称<input class="field" name="name" required placeholder="请输入设备名称"></label>
+                  <label>状态<select class="select" name="status"><option>active</option><option>disabled</option></select></label>
+                  <div class="parser-mode-grid" id="inputPluginGrid">
+                    <button class="parser-card input-card active" type="button" data-plugin="Syslog" onclick="selectInputPlugin('Syslog')"><span class="parser-icon">SYS</span>Syslog</button>
+                    <button class="parser-card input-card" type="button" data-plugin="Kafka" onclick="selectInputPlugin('Kafka')"><span class="parser-icon">K</span>Kafka</button>
+                  </div>
+                  <div class="param-panel active" data-input-panel="Syslog">
+                    <label>监听端口<input class="field" name="collectorPort" placeholder="5514"></label>
+                    <label>IP 白名单<input class="field" name="ipAcl" placeholder="0.0.0.0/0, ::/0"></label>
+                    <div class="two">
+                      <label>传输层协议<select class="select" name="transportProtocol"><option>TCP</option><option>UDP</option></select></label>
+                      <label>字符编码<select class="select" name="encoding"><option>UTF-8</option><option>GBK</option><option>ISO-8859-1</option></select></label>
+                    </div>
+                    <div class="two">
+                      <label>单条数据大小（M）<div class="unit-field"><input class="field" name="maxEventSize" value="1" placeholder="1"><span>M</span></div></label>
+                      <label>日志筛选<select class="select" name="logFilterEnabled" onchange="toggleFilterConfig('Syslog', this.value)"><option value="off">关闭</option><option value="on">开启</option></select></label>
+                    </div>
+                    <div class="conditional-panel" data-filter-panel="Syslog" hidden>
+                      <label>正则筛选<input class="field" name="logFilterRegex" placeholder="^allow|^accept"></label>
+                      <div class="route-note">开启后，仅符合正则筛选条件的日志会进入解析与存储流程；不满足条件的日志将跳过解析与落库。</div>
+                    </div>
+                    <label>保留未命中解析的原始日志<select class="select" name="keepUnparsedRaw"><option value="on">开启</option><option value="off">关闭</option></select></label>
+                  </div>
+                  <div class="param-panel" data-input-panel="Kafka">
+                    <label>传输层协议<select class="select" name="transportProtocolKafka"><option>TCP</option></select></label>
+                    <label>Broker 地址<input class="field" name="brokers" placeholder="10.0.0.1:9092,10.0.0.2:9092"></label>
+                    <div class="two">
+                      <label>Topic<input class="field" name="topic" placeholder="xdp-events"></label>
+                      <label>消费组<input class="field" name="consumerGroup" placeholder="xdp-consumer"></label>
+                    </div>
+                    <div class="two">
+                      <label>通信协议<select class="select" name="securityProtocol"><option>PLAINTEXT</option><option>SASL_PLAINTEXT</option><option>SASL_SSL</option><option>SSL</option></select></label>
+                      <label>消费策略<select class="select" name="consumeStrategy"><option>最早</option><option>最新</option></select></label>
+                    </div>
+                    <div class="two">
+                      <label>字符编码<select class="select" name="encodingKafka"><option>UTF-8</option><option>GBK</option><option>ISO-8859-1</option></select></label>
+                      <label>日志筛选<select class="select" name="logFilterEnabledKafka" onchange="toggleFilterConfig('Kafka', this.value)"><option value="off">关闭</option><option value="on">开启</option></select></label>
+                    </div>
+                    <div class="conditional-panel" data-filter-panel="Kafka" hidden>
+                      <label>正则筛选<input class="field" name="logFilterRegexKafka" placeholder="^allow|^accept"></label>
+                      <div class="route-note">开启后，仅符合正则筛选条件的消息会进入解析与存储流程；不满足条件的消息将跳过解析与落库。</div>
+                    </div>
+                    <label>保留未命中解析的原始日志<select class="select" name="keepUnparsedRawKafka"><option value="on">开启</option><option value="off">关闭</option></select></label>
+                    <div class="actions"><button class="btn ghost" type="button">测试连通性</button></div>
+                  </div>
+                  <div class="form-hint">默认写入策略由系统内部处理，采集页不展示索引配置。日志筛选开启后支持正则筛选，只有符合条件的日志会进入解析与存储。</div>
+                  <div class="actions"><button class="btn" type="submit" id="inputSubmit">新增</button><button class="btn ghost" type="button" onclick="resetInputForm()">取消</button></div>
+                </form>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><span>采集列表</span><span class="status-line">查询 / 修改 / 删除</span></div>
+              <div class="table-wrap"><table><thead><tr><th>名称</th><th>采集插件</th><th>状态</th><th>操作</th></tr></thead><tbody id="inputRows"></tbody></table></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-rules" class="tab-panel">
+          <div class="panel-header"><h2>解析配置</h2><span class="badge">props.conf / 解析插件</span></div>
+          <div class="content-grid">
+            <div class="card">
+              <div class="card-head"><span id="ruleFormTitle">新增规则</span><button class="btn ghost" type="button" onclick="resetRuleForm()">清空</button></div>
+              <div class="card-body">
+                <form id="ruleForm" class="form-grid">
+                  <input type="hidden" name="id">
+                  <input type="hidden" name="plugin" id="rulePlugin" value="正则解析插件">
+                  <label>规则名称<input class="field" name="name" required placeholder="请输入解析规则名称"></label>
+                  <div class="two">
+                    <label>关联采集数据源名称
+                      <select class="select" name="dataSourceName" id="ruleDataSourceName" onchange="applyDataSourceRoute(this.value)">
+                        <option value="">请选择采集数据源</option>
+                      </select>
+                    </label>
+                    <label>写入 index
+                      <select class="select" name="outputIndex" id="ruleOutputIndex"></select>
+                    </label>
+                  </div>
+                  <input type="hidden" name="inputRoute" value="internal_raw_topic">
+                  <div class="route-note">新增规则默认不绑定采集数据源，需手动选择；写入 index 仅展示逻辑 index，物理表由服务端内部映射，页面不展示技术路由字段。</div>
+                  <label>解析方式</label>
+                  <div class="parser-mode-grid" id="parserModeGrid">
+                    <button class="parser-card active" type="button" data-plugin="正则解析插件" onclick="selectParserPlugin('正则解析插件')"><span class="parser-icon">F(x)</span>正则</button>
+                    <button class="parser-card" type="button" data-plugin="JSON 解析插件" onclick="selectParserPlugin('JSON 解析插件')"><span class="parser-icon">{ }</span>JSON</button>
+                    <button class="parser-card" type="button" data-plugin="分隔符解析插件" onclick="selectParserPlugin('分隔符解析插件')"><span class="parser-icon">| |</span>分隔符</button>
+                    <button class="parser-card" type="button" data-plugin="KV 解析插件" onclick="selectParserPlugin('KV 解析插件')"><span class="parser-icon">K=V</span>KV</button>
+                  </div>
+                  <label>日志样例<textarea name="sampleLog" required placeholder="请输入日志样例"></textarea></label>
+                  <div class="param-panel" data-param-panel="JSON 解析插件">
+                    <div class="route-note">JSON 默认解析全部层级，高级配置将生成 <code>INDEXED_EXTRACTIONS = json</code> 与 <code>KV_MODE = none</code>。</div>
+                  </div>
+                  <div class="param-panel active" data-param-panel="正则解析插件">
+                    <label>正则表达式<textarea name="regexPattern" placeholder="src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"></textarea></label>
+                    <div class="route-note">正则表达式默认手动录入，高级配置将生成 <code>EXTRACT-*</code>；如需时间、转换或复杂字段提取，可在高级配置中逐行追加。</div>
+                  </div>
+                  <div class="param-panel" data-param-panel="KV 解析插件">
+                    <label>分隔符<input class="field" name="kvPairDelimiter" placeholder="支持竖杠、斜杠、逗号、分号、空格、换行"></label>
+                    <label>K-V分隔符<input class="field" name="kvDelimiter" placeholder="= 或 :"></label>
+                    <label>引用符<input class="field" name="kvQuote" placeholder="双引号&quot;、单引号' 等"></label>
+                  </div>
+                  <div class="param-panel" data-param-panel="分隔符解析插件">
+                    <label>分隔符<input class="field" name="delimitedDelimiter" placeholder="支持竖杠、斜杠、逗号、分号、空格、换行"></label>
+                    <label>引用符<input class="field" name="delimitedQuote" placeholder="双引号&quot;、单引号' 等"></label>
+                    <label>字段名列表<input class="field" name="delimitedFields" placeholder="event_time,src_ip,dst_ip,action,bytes"></label>
+                  </div>
+                  <div class="preview-actions">
+                    <button class="btn" type="button" onclick="previewParse()">预览解析结果</button>
+                  </div>
+                  <div class="preview-box table-wrap"><table><thead><tr><th>序号</th><th>字段</th><th>值</th><th>字段类型</th></tr></thead><tbody id="rulePreviewRows"><tr><td colspan="4">暂无解析结果</td></tr></tbody></table></div>
+                  <details class="advanced-panel" open>
+                    <summary>高级配置 / props.conf</summary>
+                    <div class="advanced-body">
+                      <label>最终 props.conf 配置
+                        <textarea name="propsConf" class="props-editor" placeholder="[source::firewall]\nTIME_PREFIX = event_time=\nTIME_FORMAT = %Y-%m-%d %H:%M:%S\nEXTRACT-ip = src=(?P<src_ip>\\S+) dst=(?P<dst_ip>\\S+)"></textarea>
+                      </label>
+                      <div class="route-note">高级配置即最终写入配置文件的 <code>props.conf</code> 内容。图形化配置会生成基础配置行，仍可按需逐行追加 <code>LINE_BREAKER</code>、<code>TIME_PREFIX</code>、<code>TIME_FORMAT</code>、<code>TRANSFORMS-*</code> 等配置项。</div>
+                    </div>
+                  </details>
+                  <div class="form-hint">规则仅在 <code>ingest</code> 阶段生效。页面不单独展示事件时间字段；时间识别请在高级配置中使用 <code>TIME_PREFIX</code>、<code>TIME_FORMAT</code>、<code>MAX_TIMESTAMP_LOOKAHEAD</code> 等 props.conf 配置项。</div>
+                  <div class="actions"><button class="btn" type="submit" id="ruleSubmit">新增</button><button class="btn ghost" type="button" onclick="resetRuleForm()">取消</button></div>
+                </form>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><span>规则列表</span><span class="status-line">查询 / 修改 / 删除</span></div>
+              <div class="table-wrap"><table><thead><tr><th>名称</th><th>解析插件</th><th>采集数据源</th><th>写入 index</th><th>props.conf</th><th>操作</th></tr></thead><tbody id="ruleRows"></tbody></table></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-indexes" class="tab-panel">
+          <div class="panel-header"><h2>索引配置</h2><span class="badge">ClickHouse 物理分表</span></div>
+          <div class="content-grid">
+            <div class="card">
+              <div class="card-head"><span id="indexFormTitle">新增索引</span><button class="btn ghost" type="button" onclick="resetIndexForm()">清空</button></div>
+              <div class="card-body">
+                <form id="indexForm" class="form-grid">
+                  <input type="hidden" name="id">
+                  <label>index 名称<input class="field" name="name" required placeholder="app"></label>
+                  <div class="two">
+                    <label>TTL 天数<input class="field" name="ttl" type="number" min="1" value="30"></label>
+                    <label>状态<select class="select" name="status"><option>active</option><option>disabled</option></select></label>
+                  </div>
+                  <div class="actions"><button class="btn" type="submit" id="indexSubmit">新增</button><button class="btn ghost" type="button" onclick="resetIndexForm()">取消</button></div>
+                </form>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-head"><span>索引列表</span><span class="status-line">查询 / 修改 / 删除</span></div>
+              <div class="table-wrap"><table><thead><tr><th>index</th><th>物理表</th><th>TTL</th><th>数据量</th><th>状态</th><th>操作</th></tr></thead><tbody id="indexRows"></tbody></table></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="tab-search" class="tab-panel">
+          <div class="panel-header"><h2>搜索页</h2><span class="badge">SPL / 时间筛选</span></div>
+          <div class="search-layout">
+            <div class="search-row">
+              <div class="search-box" id="searchQuery" contenteditable="true">index=app | stats count as total by service</div>
+              <select class="select" id="searchTime">
+                <option>近 1 天</option>
+                <option>昨天</option>
+                <option>近 7 天</option>
+                <option>近一个月</option>
+                <option>近一年</option>
+                <option>所有时间</option>
+                <option>自定义时间</option>
+                <option>高级时间表达式</option>
+              </select>
+              <button class="btn" type="button" onclick="runSearch()">查询</button>
+              <button class="btn ghost" type="button" onclick="saveSearch()">保存</button>
+            </div>
+            <div class="time-help">高级时间：<code>@d</code> 表示当天 0 点，<code>earliest=@d latest=now</code> 表示今天 0 点到当前时间，<code>-7d@d</code> 表示 7 天前 0 点。</div>
+            <div class="timeline"><div class="bar" style="height:34%"></div><div class="bar" style="height:72%"></div><div class="bar" style="height:48%"></div><div class="bar" style="height:90%"></div><div class="bar" style="height:54%"></div><div class="bar" style="height:78%"></div><div class="bar" style="height:44%"></div><div class="bar" style="height:68%"></div><div class="bar" style="height:38%"></div><div class="bar" style="height:84%"></div></div>
+            <div class="search-toolbar">
+              <div class="saved-summary"><strong>保存搜索</strong><span>仅占一行，点击查看</span><span class="count" id="savedCount">0</span></div>
+              <button class="btn ghost" type="button" id="toggleSavedBtn" onclick="toggleSavedSearches()">查看保存搜索</button>
+            </div>
+            <div class="saved-drawer" id="savedDrawer" hidden>
+              <div class="drawer-head"><span>已保存搜索</span><span class="status-line">查询 / 删除 / 回填</span></div>
+              <div class="drawer-body table-wrap"><table class="compact-table"><thead><tr><th>SPL</th><th>时间</th><th>操作</th></tr></thead><tbody id="searchRows"></tbody></table></div>
+            </div>
+            <div class="card">
+              <div class="card-head result-head">
+                <div>
+                  <span>搜索结果</span>
+                  <div class="result-meta" id="resultStatus">等待执行搜索</div>
+                </div>
+                <span class="mode-pill" id="resultMode">事件视图</span>
+              </div>
+              <div class="table-wrap"><table class="result-table"><thead id="resultHead"></thead><tbody id="resultRows"></tbody></table></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function nextId(prefix) {
+      return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    function escapeHTML(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[char]);
+    }
+
+    function inputInternalRoute(item) {
+      return item.internalRawTopic || `raw.${String(item.name || item.id || "source").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
+    }
+
+    function pad2(value) {
+      return String(value).padStart(2, "0");
+    }
+
+    function makeTime(daysAgo, hour, minute, second = 0) {
+      const date = new Date();
+      date.setDate(date.getDate() - daysAgo);
+      date.setHours(hour, minute, second, 0);
+      return date;
+    }
+
+    function timeAgo(days = 0, hours = 0, minutes = 0) {
+      return new Date(Date.now() - (((days * 24 + hours) * 60 + minutes) * 60 * 1000));
+    }
+
+    function formatTime(date) {
+      return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+    }
+
+    function parseRelativeTime(expr) {
+      const text = String(expr || "").trim();
+      if (!text || text === "now") return new Date();
+      if (text === "@d") {
+        const date = new Date();
+        date.setHours(0, 0, 0, 0);
+        return date;
+      }
+      const match = text.match(/^([+-]?)(\d+)([dhm])(@d)?$/i);
+      if (!match) return new Date();
+      const [, sign = "", amountRaw, unit, anchor] = match;
+      const amount = Number(amountRaw) * (sign === "-" ? -1 : 1);
+      const date = new Date();
+      if (unit.toLowerCase() === "d") date.setDate(date.getDate() + amount);
+      if (unit.toLowerCase() === "h") date.setHours(date.getHours() + amount);
+      if (unit.toLowerCase() === "m") date.setMinutes(date.getMinutes() + amount);
+      if (anchor) date.setHours(0, 0, 0, 0);
+      return date;
+    }
+
+    function timeWindowFromPreset(preset) {
+      const now = new Date();
+      const end = new Date(now);
+      switch (preset) {
+        case "近 1 天":
+          return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end, label: preset };
+        case "昨天": {
+          const start = new Date(now);
+          start.setDate(start.getDate() - 1);
+          start.setHours(0, 0, 0, 0);
+          const endOfYesterday = new Date(now);
+          endOfYesterday.setHours(0, 0, 0, 0);
+          return { start, end: endOfYesterday, label: preset };
+        }
+        case "近 7 天":
+          return { start: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000), end, label: preset };
+        case "近一个月":
+          return { start: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000), end, label: preset };
+        case "近一年":
+          return { start: new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000), end, label: preset };
+        case "所有时间":
+          return { start: null, end: null, label: preset };
+        case "自定义时间":
+          return { start: null, end: null, label: preset };
+        case "高级时间表达式":
+          return { start: null, end: null, label: preset };
+        default:
+          return { start: null, end: null, label: preset };
+      }
+    }
+
+    function parseQueryTokens(segment) {
+      return segment.match(/"[^"]+"|'[^']+'|\S+/g) || [];
+    }
+
+    function stripQuotes(text) {
+      const value = String(text || "").trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        return value.slice(1, -1);
+      }
+      return value;
+    }
+
+    const catalog = [
+      { id: "evt-1", time: timeAgo(0, 0, 12), index: "app", source: "http-json", sourcetype: "json", host: "api-01", service: "api", level: "info", action: "allow", bytes: 1024, event: 'service=api level=info msg="login ok" bytes=1024' },
+      { id: "evt-2", time: timeAgo(0, 0, 36), index: "app", source: "http-json", sourcetype: "json", host: "web-01", service: "api", level: "warn", action: "allow", bytes: 3840, event: 'service=api level=warn msg="slow request" bytes=3840' },
+      { id: "evt-3", time: makeTime(1, 11, 14, 7), index: "app", source: "http-json", sourcetype: "json", host: "pay-01", service: "checkout", level: "info", action: "allow", bytes: 2048, event: 'service=checkout level=info msg="payment ok" bytes=2048' },
+      { id: "evt-4", time: makeTime(1, 10, 2, 15), index: "firewall", source: "syslog-udp", sourcetype: "firewall", host: "edge-01", service: "firewall", level: "info", action: "deny", bytes: 2048, event: "src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048" },
+      { id: "evt-5", time: makeTime(1, 10, 1, 23), index: "firewall", source: "syslog-udp", sourcetype: "firewall", host: "edge-02", service: "firewall", level: "info", action: "allow", bytes: 1024, event: "src=10.0.2.9 dst=172.16.0.9 action=allow bytes=1024" },
+      { id: "evt-6", time: makeTime(6, 15, 22, 41), index: "app", source: "http-json", sourcetype: "json", host: "bill-01", service: "billing", level: "info", action: "allow", bytes: 1536, event: 'service=billing level=info msg="invoice generated" bytes=1536' },
+      { id: "evt-7", time: makeTime(29, 8, 13, 4), index: "audit", source: "file", sourcetype: "audit", host: "sec-01", service: "auth", level: "info", action: "login", bytes: 0, event: 'user=zhulin action=login result=success' },
+      { id: "evt-8", time: makeTime(180, 8, 42, 18), index: "audit", source: "file", sourcetype: "audit", host: "sec-02", service: "security", level: "error", action: "alert", bytes: 0, event: 'user=root action=alert result=failure' }
+    ];
+
+    const state = {
+      inputs: [
+        { id: "in-1", name: "Firewall Syslog", plugin: "Syslog", status: "active", internalRawTopic: "raw.ds_firewall_syslog", collectorPort: "5514", transportProtocol: "TCP", maxEventSize: "1", logFilterEnabled: "on", logFilterRegex: "action=(allow|deny)" },
+        { id: "in-2", name: "Kafka Stream", plugin: "Kafka", status: "disabled", internalRawTopic: "raw.ds_kafka_stream", brokers: "10.0.0.1:9092,10.0.0.2:9092", topic: "xdp-events", consumerGroup: "xdp-consumer", logFilterEnabledKafka: "off" }
+      ],
+      rules: [
+        {
+          id: "rule-json",
+          name: "Application JSON",
+          plugin: "JSON 解析插件",
+          dataSourceName: "",
+          inputRoute: "",
+          outputIndex: "app",
+          sampleLog: '{"@timestamp":"2026-06-22T13:55:00+0800","service":"api","level":"info","trace":{"id":"abc-001","span":"root"}}',
+          pluginConfig: {},
+          propsConf: `[source::app-json]
+INDEXED_EXTRACTIONS = json
+KV_MODE = none`
+        },
+        {
+          id: "rule-kv",
+          name: "Access KV",
+          plugin: "KV 解析插件",
+          dataSourceName: "Kafka Stream",
+          inputRoute: "raw.ds_kafka_stream",
+          outputIndex: "app",
+          sampleLog: 'time="2026-06-22 13:55:00" client_ip=10.0.0.8 method=GET status=200 bytes=1024',
+          pluginConfig: { kvPairDelimiter: "空格", kvDelimiter: "=", kvQuote: "\"" },
+          propsConf: `[source::access-kv]
+KV_MODE = auto
+FIELD_DELIMITER = 空格
+KV_DELIMITER = =
+FIELD_QUOTE = "
+TIME_PREFIX = time="
+TIME_FORMAT = %Y-%m-%d %H:%M:%S`
+        },
+        {
+          id: "rule-delimited",
+          name: "Order CSV",
+          plugin: "分隔符解析插件",
+          dataSourceName: "",
+          inputRoute: "",
+          outputIndex: "audit",
+          sampleLog: '2026-06-22 13:55:00,ord-1024,u-88,199.90,paid',
+          pluginConfig: { delimitedDelimiter: ",", delimitedQuote: "\"", delimitedFields: "event_time,order_id,user_id,amount,status" },
+          propsConf: `[source::order-csv]
+FIELD_DELIMITER = ,
+FIELD_NAMES = event_time,order_id,user_id,amount,status
+FIELD_QUOTE = "
+TIME_PREFIX = ^
+TIME_FORMAT = %Y-%m-%d %H:%M:%S`
+        },
+        {
+          id: "rule-regex",
+          name: "Firewall Regex",
+          plugin: "正则解析插件",
+          dataSourceName: "Firewall Syslog",
+          inputRoute: "raw.ds_firewall_syslog",
+          outputIndex: "firewall",
+          sampleLog: "event_time=2026-06-22 13:55:00 src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048",
+          pluginConfig: {
+            regexPattern: "src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"
+          },
+          propsConf: `[source::firewall-syslog]
+REPORT-firewall = firewall_fields
+TIME_PREFIX = event_time=
+TIME_FORMAT = %Y-%m-%d %H:%M:%S
+EXTRACT-ip = src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)`
+        }
+      ],
+      indexes: [
+        { id: "idx-1", name: "app", ttl: 30, rows: 179497, status: "active" },
+        { id: "idx-2", name: "firewall", ttl: 30, rows: 42013, status: "active" },
+        { id: "idx-3", name: "audit", ttl: 7, rows: 0, status: "active" }
+      ],
+      searches: [
+        { id: "s-1", query: "index=app | stats count as total by service", time: "近 1 天" },
+        { id: "s-2", query: "index=firewall action=deny", time: "近 7 天" }
+      ],
+      results: [],
+      searchMode: "events",
+      resultSummary: "等待执行搜索",
+      savedOpen: false,
+      editing: { input: null, rule: null, index: null }
+    };
+
+    function showTab(name) {
+      document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
+      document.querySelectorAll(".side-nav button").forEach((button) => button.classList.toggle("active", button.dataset.tab === name));
+      document.getElementById("workspace").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function updateCounts() {
+      const pairs = [
+        ["Inputs", state.inputs.length],
+        ["Rules", state.rules.length],
+        ["Indexes", state.indexes.length],
+        ["Searches", state.searches.length]
+      ];
+      pairs.forEach(([key, value]) => {
+        const statCount = document.getElementById(`count${key}`);
+        const navCount = document.getElementById(`nav${key}`);
+        if (statCount) statCount.textContent = value;
+        if (navCount) navCount.textContent = value;
+      });
+      const savedCount = document.getElementById("savedCount");
+      if (savedCount) savedCount.textContent = state.searches.length;
+    }
+
+    function findInputRoute(route) {
+      if (!route) return "未配置路由";
+      const item = state.inputs.find((input) => input.internalRawTopic === route);
+      return item ? `${item.name} · ${route}` : route;
+    }
+
+    function findDataSourceName(route, fallbackName = "") {
+      if (fallbackName) return fallbackName;
+      const item = state.inputs.find((input) => input.internalRawTopic === route);
+      return item ? item.name : "";
+    }
+
+    function selectInputPlugin(plugin) {
+      const form = document.getElementById("inputForm");
+      form.elements.plugin.value = plugin;
+      document.querySelectorAll(".input-card").forEach((card) => {
+        card.classList.toggle("active", card.dataset.plugin === plugin);
+      });
+      document.querySelectorAll("[data-input-panel]").forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.inputPanel === plugin);
+      });
+      toggleFilterConfig("Syslog", form.elements.logFilterEnabled?.value || "off");
+      toggleFilterConfig("Kafka", form.elements.logFilterEnabledKafka?.value || "off");
+    }
+
+    function toggleFilterConfig(plugin, value) {
+      const panel = document.querySelector(`[data-filter-panel="${plugin}"]`);
+      if (panel) panel.hidden = value !== "on";
+    }
+
+    function refreshDataSourceOptions(selectedName) {
+      const select = document.getElementById("ruleDataSourceName");
+      const currentValue = selectedName === undefined ? (select.value || "") : selectedName;
+      select.innerHTML = [
+        '<option value="">请选择采集数据源</option>',
+        ...state.inputs.map((input) => `<option value="${escapeHTML(input.name)}">${escapeHTML(input.name)}</option>`)
+      ].join("");
+      select.value = state.inputs.some((input) => input.name === currentValue) ? currentValue : "";
+    }
+
+    function applyDataSourceRoute(name) {
+      const form = document.getElementById("ruleForm");
+      const item = state.inputs.find((input) => input.name === name);
+      if (form.elements.inputRoute) form.elements.inputRoute.value = item ? item.internalRawTopic : "internal_raw_topic";
+      syncPropsConf();
+    }
+
+    function renderInputs() {
+      const rows = state.inputs.map((item) => `
+        <tr>
+          <td>${escapeHTML(item.name)}</td>
+          <td>${escapeHTML(item.plugin)}</td>
+          <td><code>${escapeHTML(inputInternalRoute(item))}</code></td>
+          <td>${escapeHTML(item.status)}</td>
+          <td><div class="row-actions"><button class="link-btn" onclick="editInput('${item.id}')">修改</button><button class="link-btn delete" onclick="deleteInput('${item.id}')">删除</button></div></td>
+        </tr>`).join("");
+      document.getElementById("inputRows").innerHTML = rows || '<tr><td colspan="5">暂无采集配置</td></tr>';
+    }
+
+    function resetInputForm() {
+      state.editing.input = null;
+      document.getElementById("inputForm").reset();
+      selectInputPlugin("Syslog");
+      document.getElementById("inputFormTitle").textContent = "新增采集";
+      document.getElementById("inputSubmit").textContent = "新增";
+    }
+
+    function editInput(id) {
+      const item = state.inputs.find((row) => row.id === id);
+      if (!item) return;
+      state.editing.input = id;
+      const form = document.getElementById("inputForm");
+      Object.entries(item).forEach(([key, value]) => {
+        if (form.elements[key]) form.elements[key].value = value;
+      });
+      selectInputPlugin(item.plugin || "Syslog");
+      toggleFilterConfig("Syslog", form.elements.logFilterEnabled?.value || "off");
+      toggleFilterConfig("Kafka", form.elements.logFilterEnabledKafka?.value || "off");
+      document.getElementById("inputFormTitle").textContent = "修改采集";
+      document.getElementById("inputSubmit").textContent = "保存修改";
+    }
+
+    function deleteInput(id) {
+      state.inputs = state.inputs.filter((item) => item.id !== id);
+      renderAll();
+    }
+
+    document.getElementById("inputForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      const existingInput = state.inputs.find((item) => item.id === state.editing.input);
+      const payload = {
+        ...data,
+        plugin: data.plugin || "Syslog",
+        internalRawTopic: existingInput?.internalRawTopic || `raw.ds_${String(data.name || "source").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "source"}`
+      };
+      if (state.editing.input) {
+        state.inputs = state.inputs.map((item) => item.id === state.editing.input ? { ...item, ...payload, id: item.id } : item);
+      } else {
+        state.inputs.unshift({ ...payload, id: nextId("in") });
+      }
+      resetInputForm();
+      renderAll();
+    });
+
+    function resolveDelimiter(value, fallback = " ") {
+      const text = String(value || "").trim();
+      if (!text) return fallback;
+      const aliases = {
+        "竖杠": "|",
+        "斜杠": "/",
+        "逗号": ",",
+        "分号": ";",
+        "空格": " ",
+        "换行": "\n",
+        "\\n": "\n",
+        "\\t": "\t"
+      };
+      return aliases[text] || text;
+    }
+
+    function valueType(value) {
+      if (value === "") return "empty";
+      if (/^-?\d+(\.\d+)?$/.test(String(value))) return "number";
+      if (/^(true|false)$/i.test(String(value))) return "boolean";
+      if (/^\d{4}-\d{2}-\d{2}/.test(String(value))) return "datetime";
+      return "string";
+    }
+
+    function renderPreviewRows(rows) {
+      const tbody = document.getElementById("rulePreviewRows");
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="4">暂无解析结果</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map((row, index) => `
+        <tr>
+          <td>${index + 1}</td>
+          <td><code>${escapeHTML(row.field)}</code></td>
+          <td>${escapeHTML(row.value)}</td>
+          <td>${escapeHTML(row.type || valueType(row.value))}</td>
+        </tr>`).join("");
+    }
+
+    function refreshOutputIndexOptions(selected = "app") {
+      const select = document.getElementById("ruleOutputIndex");
+      if (!select) return;
+      const value = selected || "app";
+      select.innerHTML = state.indexes.map((item) => `<option value="${escapeHTML(item.name)}" ${item.name === value ? "selected" : ""}>${escapeHTML(item.name)}</option>`).join("");
+    }
+
+    function selectParserPlugin(plugin) {
+      const form = document.getElementById("ruleForm");
+      form.elements.plugin.value = plugin;
+      document.querySelectorAll(".parser-card").forEach((card) => {
+        card.classList.toggle("active", card.dataset.plugin === plugin);
+      });
+      document.querySelectorAll(".param-panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.dataset.paramPanel === plugin);
+      });
+      if (form.elements.propsConf) syncPropsConf();
+    }
+
+    function collectPluginConfig(data) {
+      if (data.plugin === "JSON 解析插件") {
+        return {};
+      }
+      if (data.plugin === "正则解析插件") {
+        return {
+          regexPattern: data.regexPattern || ""
+        };
+      }
+      if (data.plugin === "KV 解析插件") {
+        return {
+          kvPairDelimiter: data.kvPairDelimiter || "空格",
+          kvDelimiter: data.kvDelimiter || "=",
+          kvQuote: data.kvQuote || "\""
+        };
+      }
+      return {
+        delimitedDelimiter: data.delimitedDelimiter || ",",
+        delimitedQuote: data.delimitedQuote || "\"",
+        delimitedFields: data.delimitedFields || "field1,field2,field3"
+      };
+    }
+
+    function applyPluginConfig(pluginConfig = {}) {
+      const form = document.getElementById("ruleForm");
+      Object.entries(pluginConfig).forEach(([key, value]) => {
+        if (form.elements[key]) form.elements[key].value = value;
+      });
+    }
+
+    function buildPropsConf(data) {
+      const sourceName = (data.name || "custom").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom";
+      if (data.plugin === "JSON 解析插件") {
+        return `[source::${sourceName}]
+INDEXED_EXTRACTIONS = json
+KV_MODE = none`;
+      }
+      if (data.plugin === "正则解析插件") {
+        const pattern = (data.regexPattern || "field=(?<field>\\S+)").replace(/\?P</g, "?<");
+        return `[source::${sourceName}]
+EXTRACT-custom = ${pattern}`;
+      }
+      if (data.plugin === "KV 解析插件") {
+        return `[source::${sourceName}]
+KV_MODE = auto
+FIELD_DELIMITER = ${data.kvPairDelimiter || "空格"}
+KV_DELIMITER = ${data.kvDelimiter || "="}
+FIELD_QUOTE = ${data.kvQuote || "\""}`;
+      }
+      return `[source::${sourceName}]
+INDEXED_EXTRACTIONS = csv
+FIELD_DELIMITER = ${data.delimitedDelimiter || ","}
+FIELD_NAMES = ${data.delimitedFields || "field1,field2,field3"}
+FIELD_QUOTE = ${data.delimitedQuote || "\""}`;
+    }
+
+    function syncPropsConf() {
+      const form = document.getElementById("ruleForm");
+      const data = Object.fromEntries(new FormData(form).entries());
+      form.elements.propsConf.value = buildPropsConf(data);
+    }
+
+    function generatePropsConf() {
+      syncPropsConf();
+    }
+
+    function flattenJson(value, prefix = "") {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return [{ field: prefix || "root", value: typeof value === "object" ? JSON.stringify(value) : value, type: Array.isArray(value) ? "array" : typeof value }];
+      }
+      return Object.entries(value).flatMap(([key, child]) => flattenJson(child, prefix ? `${prefix}.${key}` : key));
+    }
+
+    function previewJson(sample) {
+      try {
+        return flattenJson(JSON.parse(sample));
+      } catch {
+        return [{ field: "error", value: "JSON 样例无法解析", type: "error" }];
+      }
+    }
+
+    function previewRegex(sample, pattern) {
+      try {
+        const source = (pattern || "field=(?<field>\\S+)").replace(/\?P</g, "?<");
+        const regex = new RegExp(source, "g");
+        const matches = Array.from(sample.matchAll(regex));
+        return matches.flatMap((match, matchIndex) => {
+          const groups = match.groups || {};
+          const named = Object.entries(groups).map(([field, value]) => ({ field, value }));
+          if (named.length) return named;
+          return match.slice(1).map((value, index) => ({ field: `group_${matchIndex + 1}_${index + 1}`, value }));
+        });
+      } catch {
+        return [{ field: "error", value: "正则表达式无效", type: "error" }];
+      }
+    }
+
+    function previewKV(sample, kvDelimiter) {
+      const escaped = (kvDelimiter || "=").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`([\\w.@-]+)\\s*${escaped}\\s*(".*?"|'.*?'|\\S+)`, "g");
+      return Array.from(sample.matchAll(regex)).map((match) => ({
+        field: match[1],
+        value: stripQuotes(match[2])
+      }));
+    }
+
+    function previewDelimited(sample, delimiter, fields) {
+      const char = resolveDelimiter(delimiter, ",");
+      const values = char === " " ? sample.trim().split(/\s+/) : sample.split(char);
+      const names = String(fields || "").split(",").map((item) => item.trim()).filter(Boolean);
+      return values.map((value, index) => ({
+        field: names[index] || `field_${index + 1}`,
+        value: stripQuotes(value.trim())
+      }));
+    }
+
+    function previewParse() {
+      const form = document.getElementById("ruleForm");
+      const data = Object.fromEntries(new FormData(form).entries());
+      const sample = data.sampleLog || "";
+      let rows = [];
+      if (data.plugin === "JSON 解析插件") rows = previewJson(sample);
+      if (data.plugin === "正则解析插件") rows = previewRegex(sample, data.regexPattern);
+      if (data.plugin === "KV 解析插件") rows = previewKV(sample, data.kvDelimiter || "=");
+      if (data.plugin === "分隔符解析插件") rows = previewDelimited(sample, data.delimitedDelimiter, data.delimitedFields);
+      renderPreviewRows(rows);
+      syncPropsConf();
+    }
+
+    function renderRules() {
+      const rows = state.rules.map((item) => {
+        const propsConf = escapeHTML(item.propsConf || "—").replace(/\n/g, "<br>");
+        return `
+          <tr>
+            <td>${escapeHTML(item.name)}</td>
+            <td>${escapeHTML(item.plugin)}</td>
+            <td><code>${escapeHTML(findDataSourceName(item.inputRoute, item.dataSourceName) || "未选择")}</code></td>
+            <td><code>${escapeHTML(item.outputIndex || "app")}</code></td>
+            <td>
+              <code class="multiline-code">${propsConf}</code>
+            </td>
+            <td><div class="row-actions"><button class="link-btn" onclick="editRule('${item.id}')">修改</button><button class="link-btn delete" onclick="deleteRule('${item.id}')">删除</button></div></td>
+          </tr>`;
+      }).join("");
+      document.getElementById("ruleRows").innerHTML = rows || '<tr><td colspan="6">暂无解析配置</td></tr>';
+    }
+
+    function resetRuleForm() {
+      state.editing.rule = null;
+      document.getElementById("ruleForm").reset();
+      refreshDataSourceOptions("");
+      refreshOutputIndexOptions("app");
+      document.getElementById("ruleForm").elements.inputRoute.value = "internal_raw_topic";
+      selectParserPlugin("JSON 解析插件");
+      renderPreviewRows([]);
+      document.getElementById("ruleFormTitle").textContent = "新增规则";
+      document.getElementById("ruleSubmit").textContent = "新增";
+    }
+
+    function editRule(id) {
+      const item = state.rules.find((row) => row.id === id);
+      if (!item) return;
+      state.editing.rule = id;
+      const form = document.getElementById("ruleForm");
+      form.reset();
+      selectParserPlugin(item.plugin || "JSON 解析插件");
+      refreshDataSourceOptions(findDataSourceName(item.inputRoute, item.dataSourceName));
+      refreshOutputIndexOptions(item.outputIndex || "app");
+      Object.entries(item).forEach(([key, value]) => {
+        if (form.elements[key] && key !== "pluginConfig") form.elements[key].value = value;
+      });
+      applyPluginConfig(item.pluginConfig);
+      previewParse();
+      document.getElementById("ruleFormTitle").textContent = "修改规则";
+      document.getElementById("ruleSubmit").textContent = "保存修改";
+    }
+
+    function deleteRule(id) {
+      state.rules = state.rules.filter((item) => item.id !== id);
+      renderAll();
+    }
+
+    document.getElementById("ruleForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      const payload = {
+        name: data.name,
+        plugin: data.plugin || "JSON 解析插件",
+        dataSourceName: data.dataSourceName || "",
+        inputRoute: data.inputRoute || "",
+        outputIndex: data.outputIndex || "app",
+        sampleLog: data.sampleLog || "",
+        pluginConfig: collectPluginConfig(data),
+        propsConf: data.propsConf || buildPropsConf(data)
+      };
+      if (state.editing.rule) {
+        state.rules = state.rules.map((item) => item.id === state.editing.rule ? { ...item, ...payload, id: item.id } : item);
+      } else {
+        state.rules.unshift({ ...payload, id: nextId("rule") });
+      }
+      resetRuleForm();
+      renderAll();
+    });
+
+    function renderIndexes() {
+      const rows = state.indexes.map((item) => `
+        <tr>
+          <td><code>${escapeHTML(item.name)}</code></td>
+          <td><code>events_${escapeHTML(item.name)}</code></td>
+          <td>${escapeHTML(item.ttl)}d</td>
+          <td>${Number(item.rows || 0).toLocaleString()}</td>
+          <td>${escapeHTML(item.status)}</td>
+          <td><div class="row-actions"><button class="link-btn" onclick="editIndex('${item.id}')">修改</button><button class="link-btn delete" onclick="deleteIndex('${item.id}')">删除</button></div></td>
+        </tr>`).join("");
+      document.getElementById("indexRows").innerHTML = rows || '<tr><td colspan="6">暂无索引配置</td></tr>';
+    }
+
+    function resetIndexForm() {
+      state.editing.index = null;
+      document.getElementById("indexForm").reset();
+      document.getElementById("indexFormTitle").textContent = "新增索引";
+      document.getElementById("indexSubmit").textContent = "新增";
+    }
+
+    function editIndex(id) {
+      const item = state.indexes.find((row) => row.id === id);
+      if (!item) return;
+      state.editing.index = id;
+      const form = document.getElementById("indexForm");
+      Object.entries(item).forEach(([key, value]) => {
+        if (form.elements[key]) form.elements[key].value = value;
+      });
+      document.getElementById("indexFormTitle").textContent = "修改索引";
+      document.getElementById("indexSubmit").textContent = "保存修改";
+    }
+
+    function deleteIndex(id) {
+      state.indexes = state.indexes.filter((item) => item.id !== id);
+      renderAll();
+    }
+
+    document.getElementById("indexForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      const payload = {
+        ...data,
+        ttl: Number(data.ttl || 30)
+      };
+      if (state.editing.index) {
+        state.indexes = state.indexes.map((item) => item.id === state.editing.index ? { ...item, ...payload, rows: item.rows, id: item.id } : item);
+      } else {
+        state.indexes.unshift({ ...payload, id: nextId("idx"), rows: 0 });
+      }
+      resetIndexForm();
+      renderAll();
+    });
+
+    function getSearchText() {
+      return document.getElementById("searchQuery").textContent.trim().replace(/\s+/g, " ");
+    }
+
+    function extractTimeWindow(queryText, preset) {
+      const earliestMatch = queryText.match(/\bearliest=([^\s]+)/i);
+      const latestMatch = queryText.match(/\blatest=([^\s]+)/i);
+      if (earliestMatch || latestMatch) {
+        return {
+          start: earliestMatch ? parseRelativeTime(stripQuotes(earliestMatch[1])) : null,
+          end: latestMatch ? parseRelativeTime(stripQuotes(latestMatch[1])) : null,
+          label: `${earliestMatch ? `earliest=${stripQuotes(earliestMatch[1])}` : ""}${earliestMatch && latestMatch ? " " : ""}${latestMatch ? `latest=${stripQuotes(latestMatch[1])}` : ""}`.trim()
+        };
+      }
+      return timeWindowFromPreset(preset);
+    }
+
+    function matchesRecord(record, segment) {
+      const cleaned = segment.replace(/\bearliest=[^\s]+/ig, "").replace(/\blatest=[^\s]+/ig, "").replace(/^search\s+/i, "").trim();
+      if (!cleaned) return true;
+      const tokens = parseQueryTokens(cleaned);
+      const haystack = [
+        record.index,
+        record.source,
+        record.sourcetype,
+        record.host,
+        record.service,
+        record.level,
+        record.action,
+        record.event
+      ].join(" ").toLowerCase();
+      return tokens.every((token) => {
+        const clause = token.match(/^([\w.-]+)\s*(!=|=|>=|<=|>|<)\s*(.+)$/);
+        if (clause) {
+          const [, field, operator, rawValue] = clause;
+          const expected = stripQuotes(rawValue).toLowerCase();
+          const actual = String(record[field] ?? "").toLowerCase();
+          if (operator === "=") return actual === expected;
+          if (operator === "!=") return actual !== expected;
+          const left = Number(record[field]);
+          const right = Number(expected);
+          if (Number.isNaN(left) || Number.isNaN(right)) return true;
+          if (operator === ">") return left > right;
+          if (operator === ">=") return left >= right;
+          if (operator === "<") return left < right;
+          if (operator === "<=") return left <= right;
+          return true;
+        }
+        const text = stripQuotes(token).toLowerCase();
+        return !text || haystack.includes(text);
+      });
+    }
+
+    function splitStatsExpression(segment) {
+      const body = segment.replace(/^stats\s+/i, "").trim();
+      const byMatch = body.match(/\bby\b\s+(.+)$/i);
+      const groupFields = byMatch ? byMatch[1].trim().split(/\s+/).filter(Boolean) : [];
+      const metricExpression = byMatch ? body.slice(0, byMatch.index).trim() : body;
+      return { metricExpression: metricExpression || "count", groupFields };
+    }
+
+    function aggregateStats(records, statsSegment) {
+      const { metricExpression, groupFields } = splitStatsExpression(statsSegment);
+      const countMatch = metricExpression.match(/^count(?:\s+as\s+([\w.-]+))?$/i);
+      const sumMatch = metricExpression.match(/^sum\(([\w.-]+)\)(?:\s+as\s+([\w.-]+))?$/i);
+      const avgMatch = metricExpression.match(/^avg\(([\w.-]+)\)(?:\s+as\s+([\w.-]+))?$/i);
+
+      let metricLabel = "count";
+      let metricValueFor = (rows) => rows.length;
+
+      if (sumMatch) {
+        const [, field, alias] = sumMatch;
+        metricLabel = alias || `sum(${field})`;
+        metricValueFor = (rows) => rows.reduce((total, row) => total + Number(row[field] || 0), 0);
+      } else if (avgMatch) {
+        const [, field, alias] = avgMatch;
+        metricLabel = alias || `avg(${field})`;
+        metricValueFor = (rows) => {
+          if (!rows.length) return 0;
+          const total = rows.reduce((sum, row) => sum + Number(row[field] || 0), 0);
+          return total / rows.length;
+        };
+      } else if (countMatch) {
+        metricLabel = countMatch[1] || "count";
+      }
+
+      const groups = new Map();
+      records.forEach((record) => {
+        const keyValues = groupFields.length ? groupFields.map((field) => `${field}=${record[field] ?? ""}`) : ["all"];
+        const key = keyValues.join(" | ");
+        if (!groups.has(key)) groups.set(key, { keyValues, rows: [] });
+        groups.get(key).rows.push(record);
+      });
+
+      return Array.from(groups.values())
+        .map((group) => {
+          const rows = group.rows;
+          return {
+            group: group.keyValues.join(" "),
+            metricLabel,
+            metricValue: metricValueFor(rows),
+            sample: rows[0] ? rows[0].event : "—",
+            count: rows.length
+          };
+        })
+        .sort((left, right) => right.metricValue - left.metricValue);
+    }
+
+    function runSearch() {
+      const query = getSearchText();
+      const preset = document.getElementById("searchTime").value;
+      const queryParts = query.split("|").map((part) => part.trim()).filter(Boolean);
+      const searchSegment = queryParts[0] || "";
+      const pipelineSegments = queryParts.slice(1);
+      const timeWindow = extractTimeWindow(query, preset);
+      const filteredByTime = catalog.filter((record) => {
+        if (timeWindow.start && record.time < timeWindow.start) return false;
+        if (timeWindow.end && record.time >= timeWindow.end) return false;
+        return true;
+      });
+      const matched = filteredByTime.filter((record) => matchesRecord(record, searchSegment));
+      const statsSegment = pipelineSegments.find((part) => /^stats\b/i.test(part));
+
+      if (statsSegment) {
+        state.searchMode = "stats";
+        state.results = aggregateStats(matched, statsSegment);
+        state.resultSummary = `统计视图 · ${state.results.length} 组命中 · ${timeWindow.label || preset} · ${query || "all"}`;
+      } else {
+        state.searchMode = "events";
+        state.results = matched.map((record) => ({
+          time: formatTime(record.time),
+          event: record.event,
+          source: record.source,
+          sourcetype: record.sourcetype,
+          index: record.index,
+          host: record.host
+        }));
+        state.resultSummary = `事件视图 · ${state.results.length} 条命中 · ${timeWindow.label || preset} · ${query || "all"}`;
+      }
+
+      renderResults();
+    }
+
+    function saveSearch() {
+      const query = getSearchText();
+      const time = document.getElementById("searchTime").value;
+      if (!query) return;
+      state.searches = [{ id: nextId("s"), query, time }, ...state.searches.filter((item) => item.query !== query || item.time !== time)];
+      renderAll();
+    }
+
+    function useSearch(id) {
+      const item = state.searches.find((row) => row.id === id);
+      if (!item) return;
+      document.getElementById("searchQuery").textContent = item.query;
+      document.getElementById("searchTime").value = item.time;
+      runSearch();
+    }
+
+    function deleteSearch(id) {
+      state.searches = state.searches.filter((item) => item.id !== id);
+      renderAll();
+    }
+
+    function toggleSavedSearches() {
+      state.savedOpen = !state.savedOpen;
+      renderSearches();
+      document.getElementById("savedDrawer").hidden = !state.savedOpen;
+      document.getElementById("toggleSavedBtn").textContent = state.savedOpen ? "收起保存搜索" : "查看保存搜索";
+    }
+
+    function renderSearches() {
+      const rows = state.searches.map((item) => `
+        <tr>
+          <td><code>${escapeHTML(item.query)}</code></td>
+          <td>${escapeHTML(item.time)}</td>
+          <td><div class="row-actions"><button class="link-btn" onclick="useSearch('${item.id}')">回填</button><button class="link-btn delete" onclick="deleteSearch('${item.id}')">删除</button></div></td>
+        </tr>`).join("");
+      document.getElementById("searchRows").innerHTML = rows || '<tr><td colspan="3">暂无保存搜索</td></tr>';
+    }
+
+    function renderResults() {
+      const head = state.searchMode === "stats"
+        ? "<tr><th>分组</th><th>统计值</th><th>样本事件</th></tr>"
+        : "<tr><th>时间</th><th>事件</th></tr>";
+      document.getElementById("resultHead").innerHTML = head;
+      document.getElementById("resultMode").textContent = state.searchMode === "stats" ? "统计视图" : "事件视图";
+      document.getElementById("resultStatus").textContent = state.resultSummary;
+
+      if (!state.results.length) {
+        document.getElementById("resultRows").innerHTML = state.searchMode === "stats"
+          ? '<tr><td colspan="3">暂无统计结果</td></tr>'
+          : '<tr><td colspan="2">暂无匹配结果</td></tr>';
+        return;
+      }
+
+      if (state.searchMode === "stats") {
+        document.getElementById("resultRows").innerHTML = state.results.map((item) => `
+          <tr>
+            <td><code>${escapeHTML(item.group)}</code></td>
+            <td><strong>${Number(item.metricValue).toLocaleString()}</strong> <span class="status-line">${escapeHTML(item.metricLabel)}</span></td>
+            <td><code class="multiline-code">${escapeHTML(item.sample)}</code></td>
+          </tr>`).join("");
+        return;
+      }
+
+      document.getElementById("resultRows").innerHTML = state.results.map((item) => `
+        <tr>
+          <td>${escapeHTML(item.time)}</td>
+          <td><code class="multiline-code">${escapeHTML(item.event)}</code></td>
+        </tr>`).join("");
+    }
+
+    function renderAll() {
+      updateCounts();
+      refreshDataSourceOptions(document.getElementById("ruleForm").elements.dataSourceName.value);
+      renderInputs();
+      renderRules();
+      renderIndexes();
+      refreshOutputIndexOptions(document.getElementById("ruleForm")?.elements.outputIndex?.value || "app");
+      renderSearches();
+      renderResults();
+      document.getElementById("savedDrawer").hidden = !state.savedOpen;
+      document.getElementById("toggleSavedBtn").textContent = state.savedOpen ? "收起保存搜索" : "查看保存搜索";
+    }
+
+    document.getElementById("searchTime").addEventListener("change", () => {
+      runSearch();
+    });
+    document.getElementById("ruleForm").addEventListener("input", (event) => {
+      if (event.target.name !== "propsConf") syncPropsConf();
+    });
+    document.getElementById("ruleForm").addEventListener("change", (event) => {
+      if (event.target.name !== "propsConf") syncPropsConf();
+    });
+
+    runSearch();
+    renderAll();
+  </script>
+</body>
+</html>

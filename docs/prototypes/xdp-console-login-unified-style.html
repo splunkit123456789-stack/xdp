@@ -1,0 +1,1123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XDP Console Unified Dark Prototype</title>
+  <style>
+    :root {
+      --xdp-bg: #070925;
+      --xdp-bg-2: #12091f;
+      --xdp-ink: #f8fbff;
+      --xdp-muted: #a5b2d1;
+      --xdp-soft: #dce5fb;
+      --xdp-line: rgba(151, 173, 255, 0.18);
+      --xdp-glass: rgba(10, 15, 45, 0.76);
+      --xdp-glass-strong: rgba(20, 29, 76, 0.84);
+      --xdp-panel: rgba(255, 255, 255, 0.055);
+      --xdp-panel-2: rgba(255, 255, 255, 0.085);
+      --xdp-orange: #ffad00;
+      --xdp-coral: #ff6848;
+      --xdp-pink: #ff1f85;
+      --xdp-cyan: #55dfff;
+      --xdp-green: #67f28a;
+      --xdp-danger: #ff5f61;
+      --xdp-radius: 22px;
+      --xdp-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+      --xdp-sans: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --xdp-mono: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--xdp-ink);
+      font-family: var(--xdp-sans);
+      background:
+        radial-gradient(circle at 76% 6%, rgba(255, 31, 133, 0.24), transparent 24rem),
+        radial-gradient(circle at 8% 28%, rgba(85, 223, 255, 0.16), transparent 26rem),
+        linear-gradient(115deg, #071348 0%, #080a2b 46%, #15061e 100%);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      background:
+        repeating-linear-gradient(90deg, transparent 0 78px, rgba(255, 115, 49, 0.13) 79px, transparent 81px),
+        repeating-linear-gradient(0deg, transparent 0 138px, rgba(85, 223, 255, 0.045) 139px, transparent 141px);
+      opacity: 0.58;
+      pointer-events: none;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: auto -12rem -18rem auto;
+      z-index: -1;
+      width: 42rem;
+      height: 32rem;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6rem;
+      background: linear-gradient(135deg, rgba(255, 173, 0, 0.12), rgba(255, 31, 133, 0.14));
+      transform: rotate(18deg);
+      pointer-events: none;
+    }
+
+    button,
+    input,
+    select,
+    textarea { font: inherit; }
+
+    button { cursor: pointer; }
+
+    .page {
+      width: min(1500px, calc(100vw - 44px));
+      margin: 0 auto;
+      padding: 22px 0 56px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 16px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-height: 62px;
+      border: 1px solid var(--xdp-line);
+      border-radius: 999px;
+      padding: 0 18px 0 24px;
+      background: rgba(5, 8, 30, 0.66);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 58px rgba(0, 0, 0, 0.3);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-right: auto;
+      color: #fff;
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, var(--xdp-orange), var(--xdp-pink));
+      color: #12071c;
+      font-weight: 700;
+      box-shadow: 0 0 30px rgba(255, 78, 86, 0.38);
+    }
+
+    .top-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .top-nav button {
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 13px;
+      color: #b7c2df;
+      background: transparent;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .top-nav button:hover,
+    .top-nav button.active {
+      color: #fff;
+      background: rgba(85, 223, 255, 0.12);
+    }
+
+    .user-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: #dbe6ff;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--xdp-green);
+      box-shadow: 0 0 0 6px rgba(103, 242, 138, 0.11), 0 0 24px rgba(103, 242, 138, 0.72);
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 244px minmax(0, 1fr);
+      gap: 18px;
+      margin-top: 28px;
+    }
+
+    .sidebar,
+    .main,
+    .summary-card,
+    .card {
+      border: 1px solid var(--xdp-line);
+      background: linear-gradient(180deg, rgba(20, 29, 76, 0.82), rgba(6, 10, 35, 0.74));
+      box-shadow: var(--xdp-shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 102px;
+      align-self: start;
+      border-radius: var(--xdp-radius);
+      padding: 18px;
+    }
+
+    .sidebar-title {
+      margin: 0 0 14px;
+      color: #c8d4f5;
+      font: 700 12px var(--xdp-mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .side-nav {
+      display: grid;
+      gap: 9px;
+    }
+
+    .side-nav button {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 13px 13px;
+      color: #c9d4f0;
+      background: rgba(255, 255, 255, 0.045);
+      text-align: left;
+      font-weight: 800;
+    }
+
+    .side-nav button.active {
+      border-color: transparent;
+      color: #15071d;
+      background: linear-gradient(90deg, var(--xdp-orange), var(--xdp-coral) 48%, var(--xdp-pink));
+      box-shadow: 0 18px 40px rgba(255, 60, 114, 0.18);
+    }
+
+    .count {
+      min-width: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: inherit;
+      background: rgba(255, 255, 255, 0.13);
+      font: 800 12px var(--xdp-mono);
+      text-align: center;
+    }
+
+    .module-meter {
+      display: grid;
+      gap: 9px;
+      margin-top: 18px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .module-meter span {
+      color: var(--xdp-muted);
+      font-size: 12px;
+    }
+
+    .spark {
+      height: 42px;
+      border-radius: 13px;
+      background:
+        linear-gradient(90deg, transparent 0 12%, rgba(85, 223, 255, 0.48) 12% 14%, transparent 14% 27%, rgba(255, 173, 0, 0.62) 27% 30%, transparent 30% 45%, rgba(255, 31, 133, 0.54) 45% 48%, transparent 48% 62%, rgba(103, 242, 138, 0.42) 62% 65%, transparent 65%),
+        repeating-linear-gradient(0deg, transparent 0 10px, rgba(255,255,255,.05) 11px, transparent 12px),
+        rgba(255,255,255,.035);
+    }
+
+    .main {
+      min-width: 0;
+      border-radius: var(--xdp-radius);
+      padding: 22px;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) repeat(3, minmax(150px, 0.33fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .summary-card {
+      min-height: 132px;
+      border-radius: 20px;
+      padding: 20px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .summary-card::after {
+      content: "";
+      position: absolute;
+      right: -42px;
+      bottom: -48px;
+      width: 160px;
+      height: 130px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 34px;
+      background: linear-gradient(135deg, rgba(255, 173, 0, 0.14), rgba(255, 31, 133, 0.16));
+      transform: rotate(18deg);
+    }
+
+    .eyebrow {
+      margin: 0;
+      color: #c8d4f5;
+      font: 800 12px var(--xdp-mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .summary-card h1 {
+      position: relative;
+      z-index: 1;
+      margin: 10px 0 0;
+      font-size: clamp(40px, 5vw, 72px);
+      line-height: 0.92;
+      letter-spacing: -0.07em;
+    }
+
+    .gradient-text {
+      background: linear-gradient(90deg, var(--xdp-orange), var(--xdp-coral) 46%, var(--xdp-pink));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      text-shadow: 0 18px 70px rgba(255, 54, 117, 0.26);
+    }
+
+    .summary-card.stat {
+      display: grid;
+      align-content: space-between;
+    }
+
+    .summary-card.stat b {
+      color: #fff;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .summary-card.stat span {
+      color: var(--xdp-muted);
+      font-size: 13px;
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active {
+      display: block;
+      animation: rise 220ms ease-out both;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .panel-header h2 {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0;
+      color: #fff;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .page-icon {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      color: #12071c;
+      background: linear-gradient(135deg, var(--xdp-cyan), var(--xdp-green));
+      font: 900 11px var(--xdp-mono);
+      box-shadow: 0 0 28px rgba(85, 223, 255, 0.28);
+    }
+
+    .badge {
+      border: 1px solid rgba(103, 242, 138, 0.24);
+      border-radius: 999px;
+      background: rgba(103, 242, 138, 0.11);
+      color: #b8ffc8;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: minmax(340px, 0.78fr) minmax(0, 1.22fr);
+      gap: 18px;
+    }
+
+    .card {
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-weight: 850;
+    }
+
+    .card-body {
+      padding: 18px;
+    }
+
+    .status-line,
+    .note,
+    .form-hint,
+    .muted {
+      color: var(--xdp-muted);
+      font-size: 12px;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 13px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      color: #dce5fb;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .field,
+    .select,
+    textarea,
+    .search-box {
+      width: 100%;
+      min-height: 46px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 13px;
+      outline: none;
+      color: #fff;
+      background: rgba(1, 4, 22, 0.46);
+      padding: 0 14px;
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }
+
+    .field::placeholder,
+    textarea::placeholder,
+    .search-box::placeholder {
+      color: #7887aa;
+    }
+
+    .field:focus,
+    .select:focus,
+    textarea:focus,
+    .search-box:focus {
+      border-color: rgba(85, 223, 255, 0.78);
+      background: rgba(3, 9, 34, 0.74);
+      box-shadow: 0 0 0 4px rgba(85, 223, 255, 0.1);
+    }
+
+    textarea {
+      min-height: 108px;
+      padding: 12px 14px;
+      resize: vertical;
+      font-family: var(--xdp-mono);
+      line-height: 1.5;
+    }
+
+    .two {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .plugin-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .plugin-grid.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .plugin-card {
+      min-height: 78px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 18px;
+      color: #dce5fb;
+      background: rgba(255, 255, 255, 0.055);
+      padding: 14px;
+      font-weight: 850;
+      text-align: left;
+    }
+
+    .plugin-card.active {
+      border-color: rgba(255, 173, 0, 0.58);
+      color: #fff;
+      background:
+        linear-gradient(135deg, rgba(255, 173, 0, 0.12), rgba(255, 31, 133, 0.09)),
+        rgba(255, 255, 255, 0.055);
+      box-shadow: 0 0 30px rgba(255, 78, 86, 0.12);
+    }
+
+    .plugin-icon {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border-radius: 12px;
+      color: #12071c;
+      background: linear-gradient(135deg, var(--xdp-cyan), var(--xdp-green));
+      font: 900 11px var(--xdp-mono);
+    }
+
+    .param-panel,
+    .conditional-panel,
+    .preview-box,
+    .saved-drawer,
+    .advanced-panel {
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.045);
+      padding: 14px;
+    }
+
+    .unit-field {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 48px;
+      align-items: center;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 13px;
+      background: rgba(1, 4, 22, 0.46);
+    }
+
+    .unit-field .field {
+      min-height: 44px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+
+    .unit-field span {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      border-left: 1px solid rgba(255, 255, 255, 0.12);
+      color: #7ee9ff;
+      font: 900 12px var(--xdp-mono);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    .btn {
+      min-height: 42px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 0 16px;
+      color: #14071c;
+      background: linear-gradient(90deg, var(--xdp-orange), var(--xdp-coral) 46%, var(--xdp-pink));
+      font-weight: 850;
+      box-shadow: 0 18px 42px rgba(255, 57, 116, 0.23);
+    }
+
+    .btn.ghost {
+      border-color: rgba(85, 223, 255, 0.28);
+      color: #dffaff;
+      background: rgba(85, 223, 255, 0.1);
+      box-shadow: none;
+    }
+
+    .btn.danger {
+      border-color: rgba(255, 95, 97, 0.34);
+      color: #ffcbc6;
+      background: rgba(255, 95, 97, 0.12);
+      box-shadow: none;
+    }
+
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      color: #e7edff;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.085);
+      padding: 13px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      color: #9dadcf;
+      background: rgba(255, 255, 255, 0.05);
+      font-weight: 850;
+    }
+
+    tr:hover td {
+      background: rgba(85, 223, 255, 0.045);
+    }
+
+    code,
+    .search-box {
+      font-family: var(--xdp-mono);
+    }
+
+    code {
+      color: #7ee9ff;
+    }
+
+    .multiline-code {
+      white-space: pre-wrap;
+    }
+
+    .row-actions {
+      display: flex;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .link-btn {
+      border: 0;
+      padding: 0;
+      color: var(--xdp-cyan);
+      background: transparent;
+      font-weight: 850;
+    }
+
+    .link-btn.delete {
+      color: #ff9ea0;
+    }
+
+    .status-pill {
+      display: inline-grid;
+      place-items: center;
+      min-height: 24px;
+      border: 1px solid rgba(103, 242, 138, 0.28);
+      border-radius: 999px;
+      padding: 0 9px;
+      color: #b8ffc8;
+      background: rgba(103, 242, 138, 0.1);
+      font: 800 11px var(--xdp-mono);
+    }
+
+    .search-layout {
+      display: grid;
+      gap: 16px;
+    }
+
+    .search-row {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) 180px auto auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .search-box {
+      min-height: 48px;
+      resize: none;
+      line-height: 24px;
+      padding: 11px 16px;
+      overflow: auto;
+    }
+
+    .time-help {
+      color: var(--xdp-muted);
+      font-size: 12px;
+    }
+
+    .timeline {
+      height: 158px;
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr);
+      gap: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 18px;
+      padding: 12px 14px 10px;
+      background:
+        repeating-linear-gradient(0deg, transparent 0 20px, rgba(255,255,255,.045) 21px, transparent 22px),
+        rgba(255, 255, 255, 0.035);
+    }
+
+    .timeline-y {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 2px 0 22px;
+      color: var(--xdp-muted);
+      font: 800 11px var(--xdp-mono);
+      text-align: right;
+    }
+
+    .timeline-plot {
+      display: grid;
+      grid-template-rows: 1fr 22px;
+      min-width: 0;
+    }
+
+    .timeline-bars {
+      display: flex;
+      align-items: end;
+      gap: 4px;
+      min-height: 104px;
+      border-left: 1px solid rgba(255,255,255,.13);
+      border-bottom: 1px solid rgba(255,255,255,.16);
+      padding: 0 4px;
+    }
+
+    .bar {
+      flex: 1;
+      min-width: 4px;
+      border-radius: 4px 4px 0 0;
+      background: linear-gradient(180deg, var(--xdp-cyan), var(--xdp-pink));
+      box-shadow: 0 0 18px rgba(85, 223, 255, 0.12);
+    }
+
+    .timeline-x {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 7px;
+      color: var(--xdp-muted);
+      font: 800 11px var(--xdp-mono);
+      white-space: nowrap;
+    }
+
+    .saved-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 999px;
+      padding: 9px 12px;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--xdp-muted);
+    }
+
+    .result-table .expand-col { width: 38px; }
+
+    .expand-toggle {
+      border: 0;
+      color: var(--xdp-cyan);
+      background: transparent;
+      font: 900 13px var(--xdp-mono);
+    }
+
+    .event-detail {
+      display: grid;
+      gap: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .detail-raw {
+      display: grid;
+      gap: 6px;
+    }
+
+    .detail-raw span {
+      color: var(--xdp-muted);
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .footer-note {
+      margin: 16px 0 0;
+      color: #7f8fb7;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 1180px) {
+      .overview {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .top-nav {
+        display: none;
+      }
+
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: relative;
+        top: auto;
+      }
+
+      .side-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .search-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      .page {
+        width: min(100% - 24px, 1500px);
+        padding-top: 14px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        border-radius: 24px;
+        padding: 14px;
+      }
+
+      .user-chip {
+        display: none;
+      }
+
+      .overview,
+      .side-nav,
+      .two,
+      .plugin-grid,
+      .plugin-grid.four {
+        grid-template-columns: 1fr;
+      }
+
+      .main {
+        padding: 16px;
+      }
+
+      .panel-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">X</span><span>XDP&gt;Console</span></div>
+      <nav class="top-nav" aria-label="主模块导航">
+        <button class="active" type="button" data-tab="collect" onclick="showTab('collect')">采集配置</button>
+        <button type="button" data-tab="parse" onclick="showTab('parse')">解析配置</button>
+        <button type="button" data-tab="index" onclick="showTab('index')">索引配置</button>
+        <button type="button" data-tab="search" onclick="showTab('search')">搜索页</button>
+      </nav>
+      <div class="user-chip"><span class="status-dot"></span><span>Administrator</span></div>
+      <button class="btn ghost" type="button">退出</button>
+    </header>
+
+    <section class="shell">
+      <aside class="sidebar">
+        <p class="sidebar-title">MVP Console</p>
+        <nav class="side-nav" aria-label="左侧模块导航">
+          <button class="active" type="button" data-tab="collect" onclick="showTab('collect')">采集配置 <span class="count">2</span></button>
+          <button type="button" data-tab="parse" onclick="showTab('parse')">解析配置 <span class="count">4</span></button>
+          <button type="button" data-tab="index" onclick="showTab('index')">索引配置 <span class="count">3</span></button>
+          <button type="button" data-tab="search" onclick="showTab('search')">搜索页 <span class="count">2</span></button>
+        </nav>
+        <div class="module-meter">
+          <span>Event Flow / last 24h</span>
+          <div class="spark" aria-hidden="true"></div>
+          <span>Syslog UDP 5514 active</span>
+        </div>
+      </aside>
+
+      <section class="main">
+        <section class="overview" aria-label="总览指标">
+          <article class="summary-card">
+            <p class="eyebrow">UNIFIED DARK CONSOLE</p>
+            <h1><span class="gradient-text">XDP</span></h1>
+          </article>
+          <article class="summary-card stat"><span>采集配置</span><b>2</b><span>Syslog active</span></article>
+          <article class="summary-card stat"><span>解析规则</span><b>4</b><span>regex / json / kv</span></article>
+          <article class="summary-card stat"><span>今日事件</span><b>18.4K</b><span>Asia/Shanghai</span></article>
+        </section>
+
+        <section id="tab-collect" class="tab-panel active">
+          <div class="panel-header">
+            <h2><span class="page-icon">IN</span>采集配置</h2>
+            <span class="badge">Syslog / Kafka</span>
+          </div>
+          <div class="content-grid">
+            <article class="card">
+              <div class="card-head"><span>新增采集</span><button class="btn ghost" type="button">清空</button></div>
+              <div class="card-body">
+                <form class="form-grid">
+                  <label>设备名称<input class="field" placeholder="请输入设备名称" value="Firewall Syslog"></label>
+                  <label>状态<select class="select"><option>active</option><option>disabled</option></select></label>
+                  <div class="plugin-grid">
+                    <button class="plugin-card active" type="button"><span class="plugin-icon">SYS</span>Syslog</button>
+                    <button class="plugin-card" type="button"><span class="plugin-icon">K</span>Kafka</button>
+                  </div>
+                  <div class="param-panel">
+                    <div class="two">
+                      <label>监听端口<input class="field" value="5514"></label>
+                      <label>日志筛选<select class="select"><option>关闭</option><option>开启</option></select></label>
+                    </div>
+                    <div class="two" style="margin-top:12px">
+                      <label>传输层协议<select class="select"><option>UDP</option></select></label>
+                      <label>字符编码<select class="select"><option>UTF-8</option><option>GBK</option></select></label>
+                    </div>
+                  </div>
+                  <p class="form-hint">采集页不展示默认 index、解析绑定或内部路由。保存后后台启动对应 UDP 端口监听。</p>
+                  <div class="actions"><button class="btn" type="button">新增</button><button class="btn ghost" type="button">取消</button></div>
+                </form>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-head"><span>采集列表</span><span class="status-line">查询 / 修改 / 删除 / 启停</span></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>名称</th><th>采集插件</th><th>状态</th><th>运行态</th><th>操作</th></tr></thead>
+                  <tbody>
+                    <tr><td>Firewall Syslog</td><td>Syslog</td><td><span class="status-pill">active</span></td><td><code>udp://0.0.0.0:5514</code></td><td><div class="row-actions"><button class="link-btn">停止</button><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                    <tr><td>Kafka Stream</td><td>Kafka</td><td><span class="status-pill">disabled</span></td><td><code>planned</code></td><td><div class="row-actions"><button class="link-btn">启动</button><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="tab-parse" class="tab-panel">
+          <div class="panel-header">
+            <h2><span class="page-icon">PX</span>解析配置</h2>
+            <span class="badge">props.conf / 解析插件</span>
+          </div>
+          <div class="content-grid">
+            <article class="card">
+              <div class="card-head"><span>新增规则</span><button class="btn ghost" type="button">清空</button></div>
+              <div class="card-body">
+                <form class="form-grid">
+                  <label>规则名称<input class="field" value="Firewall Regex"></label>
+                  <div class="two">
+                    <label>关联采集数据源名称<select class="select"><option>Firewall Syslog</option></select></label>
+                    <label>写入 index<select class="select"><option>audit</option><option>app</option></select></label>
+                  </div>
+                  <label>解析方式</label>
+                  <div class="plugin-grid four">
+                    <button class="plugin-card active" type="button"><span class="plugin-icon">R</span>正则</button>
+                    <button class="plugin-card" type="button"><span class="plugin-icon">{}</span>JSON</button>
+                    <button class="plugin-card" type="button"><span class="plugin-icon">|</span>分隔符</button>
+                    <button class="plugin-card" type="button"><span class="plugin-icon">KV</span>KV</button>
+                  </div>
+                  <label>日志样例<textarea>src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048</textarea></label>
+                  <label>正则表达式<textarea>src=(?&lt;src_ip&gt;\S+)\s+dst=(?&lt;dst_ip&gt;\S+)\s+action=(?&lt;action&gt;\S+)\s+bytes=(?&lt;bytes&gt;\d+)</textarea></label>
+                  <div class="preview-box">
+                    <table>
+                      <thead><tr><th>字段</th><th>值</th></tr></thead>
+                      <tbody><tr><td><code>src_ip</code></td><td>10.0.1.8</td></tr><tr><td><code>action</code></td><td>deny</td></tr></tbody>
+                    </table>
+                  </div>
+                  <details class="advanced-panel" open>
+                    <summary>高级配置 / props.conf</summary>
+                    <label style="margin-top:12px">最终 props.conf 配置<textarea>[source::firewall-regex]
+EXTRACT-custom = src=(?&lt;src_ip&gt;\S+)\s+dst=(?&lt;dst_ip&gt;\S+)\s+action=(?&lt;action&gt;\S+)\s+bytes=(?&lt;bytes&gt;\d+)</textarea></label>
+                  </details>
+                  <div class="actions"><button class="btn" type="button">新增</button><button class="btn ghost" type="button">预览解析</button></div>
+                </form>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-head"><span>规则列表</span><span class="status-line">props.conf 持久化</span></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>名称</th><th>插件</th><th>采集源</th><th>写入 index</th><th>操作</th></tr></thead>
+                  <tbody>
+                    <tr><td>Firewall Regex</td><td>regex</td><td>Firewall Syslog</td><td><code>audit</code></td><td><div class="row-actions"><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                    <tr><td>Application JSON</td><td>json</td><td>HTTP App</td><td><code>app</code></td><td><div class="row-actions"><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="tab-index" class="tab-panel">
+          <div class="panel-header">
+            <h2><span class="page-icon">IX</span>索引配置</h2>
+            <span class="badge">ClickHouse 物理分表</span>
+          </div>
+          <div class="content-grid">
+            <article class="card">
+              <div class="card-head"><span>新增索引</span><button class="btn ghost" type="button">清空</button></div>
+              <div class="card-body">
+                <form class="form-grid">
+                  <label>index 名称<input class="field" value="audit"></label>
+                  <div class="two">
+                    <label>TTL 天数<input class="field" value="30"></label>
+                    <label>状态<select class="select"><option>active</option><option>disabled</option></select></label>
+                  </div>
+                  <p class="form-hint">物理表由系统生成，示例：<code>events_audit</code>。</p>
+                  <div class="actions"><button class="btn" type="button">新增</button><button class="btn ghost" type="button">取消</button></div>
+                </form>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-head"><span>索引列表</span><span class="status-line">TTL / Storage / Rows</span></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>index</th><th>物理表</th><th>TTL</th><th>数据量</th><th>最近写入</th><th>操作</th></tr></thead>
+                  <tbody>
+                    <tr><td><code>app</code></td><td>events_app</td><td>30d</td><td>179,497</td><td>2026-06-29 18:42</td><td><div class="row-actions"><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                    <tr><td><code>audit</code></td><td>events_audit</td><td>30d</td><td>18,240</td><td>2026-06-29 18:44</td><td><div class="row-actions"><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                    <tr><td><code>firewall</code></td><td>events_firewall</td><td>7d</td><td>42,013</td><td>2026-06-29 18:31</td><td><div class="row-actions"><button class="link-btn">修改</button><button class="link-btn delete">删除</button></div></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="tab-search" class="tab-panel">
+          <div class="panel-header">
+            <h2><span class="page-icon">SP</span>搜索页</h2>
+            <span class="badge">SPL / 时间筛选</span>
+          </div>
+          <div class="search-layout">
+            <div class="card">
+              <div class="card-body">
+                <div class="search-row">
+                  <textarea class="search-box" rows="1" placeholder="请输入 SPL语句">index=audit src="10.0.1.8"</textarea>
+                  <select class="select"><option>近 1 天</option><option>近 7 天</option><option>所有时间</option></select>
+                  <button class="btn" type="button">查询</button>
+                  <button class="btn ghost" type="button">保存</button>
+                </div>
+                <div class="time-help">高级时间提示：<code>@d</code> 表示当天 0 点，<code>-7d@d</code> 表示 7 天前 0 点。P0 固定时间选项可用。</div>
+              </div>
+            </div>
+            <div class="timeline">
+              <div class="timeline-y"><span>42</span><span>21</span><span>0</span></div>
+              <div class="timeline-plot">
+                <div class="timeline-bars">
+                  <div class="bar" style="height:28%"></div>
+                  <div class="bar" style="height:44%"></div>
+                  <div class="bar" style="height:18%"></div>
+                  <div class="bar" style="height:62%"></div>
+                  <div class="bar" style="height:37%"></div>
+                  <div class="bar" style="height:80%"></div>
+                  <div class="bar" style="height:50%"></div>
+                  <div class="bar" style="height:100%"></div>
+                  <div class="bar" style="height:46%"></div>
+                  <div class="bar" style="height:70%"></div>
+                  <div class="bar" style="height:24%"></div>
+                  <div class="bar" style="height:58%"></div>
+                </div>
+                <div class="timeline-x"><span>06/29 00:00</span><span>06/29 12:00</span><span>06/29 23:59</span></div>
+              </div>
+            </div>
+            <div class="saved-summary"><strong>保存搜索</strong><span>点击查看，仅占一行</span><span class="count">2</span></div>
+            <article class="card">
+              <div class="card-head"><span>搜索结果</span><span class="status-line">事件视图 · 1 条命中 · 8ms</span></div>
+              <div class="table-wrap">
+                <table class="result-table">
+                  <thead><tr><th class="expand-col"></th><th>时间</th><th>事件</th></tr></thead>
+                  <tbody>
+                    <tr><td><button class="expand-toggle" type="button">▼</button></td><td>06/29 18:44:12</td><td><code>src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048</code></td></tr>
+                    <tr>
+                      <td></td>
+                      <td colspan="2">
+                        <div class="event-detail">
+                          <div class="detail-raw"><span>raw</span><code class="multiline-code">src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048</code></div>
+                          <table>
+                            <thead><tr><th>字段</th><th>值</th></tr></thead>
+                            <tbody><tr><td><code>source</code></td><td>Firewall Syslog</td></tr><tr><td><code>sourcetype</code></td><td>Firewall Regex</td></tr><tr><td><code>src_ip</code></td><td>10.0.1.8</td></tr><tr><td><code>action</code></td><td>deny</td></tr></tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </section>
+
+    <p class="footer-note">© 2026 XDP Console · unified login-style draft</p>
+  </main>
+
+  <script>
+    function showTab(name) {
+      document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.remove("active"));
+      document.getElementById(`tab-${name}`).classList.add("active");
+      document.querySelectorAll("[data-tab]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === name);
+      });
+    }
+  </script>
+</body>
+</html>

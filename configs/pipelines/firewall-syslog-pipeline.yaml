@@ -1,0 +1,59 @@
+api_version: xdp.io/v1alpha1
+kind: Pipeline
+metadata:
+  id: firewall-syslog-pipeline
+  name: Firewall Syslog Pipeline
+spec:
+  source:
+    id: syslog-firewall
+    type: input
+    plugin: syslog-input
+    version: 1.0.0
+  stages:
+    - id: parse-firewall
+      type: parser
+      plugin: regex-parser
+      version: 1.0.0
+      config:
+        pattern: "src=(?P<src_ip>\\S+) dst=(?P<dst_ip>\\S+) action=(?P<action>\\S+) bytes=(?P<bytes>\\d+)"
+      on_error:
+        action: dead_letter
+    - id: convert-types
+      type: transform
+      plugin: type-convert
+      version: 1.0.0
+      config:
+        fields:
+          bytes: int
+    - id: enrich-src
+      type: enrichment
+      plugin: geoip
+      version: 1.0.0
+      config:
+        field: fields.src_ip
+        target: fields.src_geo
+    - id: route-firewall
+      type: router
+      plugin: index-router
+      version: 1.0.0
+      config:
+        rules:
+          - when: "fields.action == 'deny'"
+            set:
+              metadata.index: firewall
+            add_tags:
+              - blocked
+  outputs:
+    - id: forward-blocked
+      plugin: kafka-output
+      version: 1.0.0
+      when: "tags contains 'forward_to_kafka'"
+      config:
+        brokers: kafka:9092
+        topic: xdp.security.blocked
+        key: "${event_id}"
+    - id: archive-local
+      plugin: s3-output
+      version: 1.0.0
+      config:
+        local_dir: data/minio-archive

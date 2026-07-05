@@ -1,0 +1,137 @@
+package mysql
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestRuntimeSchemaIncludesAuthTables(t *testing.T) {
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS auth_users",
+		"password_hash VARCHAR(255) NOT NULL",
+		"password_algo VARCHAR(64) NOT NULL DEFAULT 'bcrypt'",
+		"UNIQUE KEY uk_auth_users_username",
+		"CREATE TABLE IF NOT EXISTS auth_tokens",
+		"token_hash VARCHAR(255) NOT NULL",
+		"UNIQUE KEY uk_auth_tokens_hash",
+		"CONSTRAINT fk_auth_tokens_user",
+		"CREATE TABLE IF NOT EXISTS auth_audit_logs",
+		"KEY idx_auth_audit_username_type",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeSchemaIncludesParseRuleOutputIndex(t *testing.T) {
+	required := []string{
+		"output_index VARCHAR(128) NOT NULL DEFAULT 'app'",
+		"KEY idx_parse_rules_output_index_status (output_index, status)",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeSchemaIncludesDataSourceNameUniqueness(t *testing.T) {
+	required := []string{
+		"active_name VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED",
+		"UNIQUE KEY uk_data_sources_active_name (active_name)",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeSchemaIncludesSavedSearches(t *testing.T) {
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS saved_searches",
+		"spl TEXT NOT NULL",
+		"time_range_type VARCHAR(32) NOT NULL DEFAULT 'preset'",
+		"KEY idx_saved_searches_status_time (status, updated_at DESC)",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestSeedSavedSearchesOnlySeedsAnEmptyTable(t *testing.T) {
+	if !strings.Contains(seedSavedSearchesCountSQL, "COUNT(*) FROM saved_searches") {
+		t.Fatalf("seed saved searches must check whether table is empty first")
+	}
+	if !strings.Contains(seedSavedSearchesInsertSQL, "INSERT IGNORE INTO saved_searches") {
+		t.Fatalf("seed saved searches must insert defaults without overwriting existing rows")
+	}
+	if strings.Contains(seedSavedSearchesInsertSQL, "ON DUPLICATE KEY UPDATE") {
+		t.Fatalf("seed saved searches must not resurrect deleted defaults via upsert")
+	}
+}
+
+func TestSaveDataSourceSQLMaintainsDeletedAtLifecycle(t *testing.T) {
+	required := map[string]string{
+		"update marks deleted rows": "deleted_at = CASE WHEN ? = 'deleted' THEN CURRENT_TIMESTAMP(3) ELSE NULL END",
+		"insert marks deleted rows": "CASE WHEN ? = 'deleted' THEN CURRENT_TIMESTAMP(3) ELSE NULL END",
+	}
+	for name, want := range required {
+		if !strings.Contains(saveDataSourceUpdateSQL+" "+saveDataSourceInsertSQL, want) {
+			t.Fatalf("%s: save datasource SQL missing %q", name, want)
+		}
+	}
+	if strings.Contains(saveDataSourceInsertSQL, "ON DUPLICATE KEY UPDATE") {
+		t.Fatalf("save datasource insert must not upsert on arbitrary unique-key conflicts")
+	}
+}
+
+func TestRuntimeSchemaContainsNoWorkspaceIsolationArtifacts(t *testing.T) {
+	forbidden := "ten" + "ant"
+	for _, ddl := range []struct {
+		name string
+		body string
+	}{
+		{name: "runtime schema", body: schema},
+		{name: "runtime compatibility schema", body: compatibilitySchema},
+	} {
+		if strings.Contains(strings.ToLower(ddl.body), forbidden) {
+			t.Fatalf("%s must not contain workspace isolation artifacts", ddl.name)
+		}
+	}
+}
+
+func TestMigrationFileIncludesAuthTables(t *testing.T) {
+	data, err := os.ReadFile("../../../migrations/mysql/000001_core_metadata.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	migration := string(data)
+	required := []string{
+		"CREATE TABLE auth_users",
+		"password_hash VARCHAR(255) NOT NULL",
+		"password_algo VARCHAR(64) NOT NULL DEFAULT 'bcrypt'",
+		"CREATE TABLE auth_tokens",
+		"token_hash VARCHAR(255) NOT NULL",
+		"CREATE TABLE auth_audit_logs",
+		"output_index VARCHAR(128) NOT NULL DEFAULT 'app'",
+		"KEY idx_parse_rules_output_index_status (output_index, status)",
+		"active_name VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED",
+		"UNIQUE KEY uk_data_sources_active_name (active_name)",
+		"CREATE TABLE saved_searches",
+		"KEY idx_saved_searches_status_time (status, updated_at DESC)",
+	}
+	for _, want := range required {
+		if !strings.Contains(migration, want) {
+			t.Fatalf("migration missing %q", want)
+		}
+	}
+	if strings.Contains(migration, "password VARCHAR") {
+		t.Fatalf("migration must not define plaintext password column")
+	}
+}

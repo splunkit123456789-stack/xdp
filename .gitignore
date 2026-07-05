@@ -1,0 +1,6 @@
+build/
+data/
+.cache/
+.DS_Store
+web/console/node_modules/
+web/console/dist/

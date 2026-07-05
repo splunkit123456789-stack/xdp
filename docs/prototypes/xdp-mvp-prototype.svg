@@ -1,0 +1,287 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200">
+  <defs>
+    <linearGradient id="loginBg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#031014"/>
+      <stop offset="0.55" stop-color="#071b22"/>
+      <stop offset="1" stop-color="#02070a"/>
+    </linearGradient>
+    <linearGradient id="panelBg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f7f9fb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#1b2a35" flood-opacity="0.16"/>
+    </filter>
+    <style>
+      .page { fill: #edf1f5; }
+      .title { font: 700 42px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #1f2a33; }
+      .subtitle { font: 400 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #65727d; }
+      .frame { fill: url(#panelBg); stroke: #d7dee6; stroke-width: 1.4; filter: url(#shadow); }
+      .frame-title { font: 700 26px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #263540; }
+      .frame-subtitle { font: 400 15px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #6b7782; }
+      .topbar { fill: #141c23; }
+      .navtext { font: 600 15px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #c9d2dc; }
+      .navactive { fill: #55c957; }
+      .label { font: 600 14px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #465461; }
+      .small { font: 400 13px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #6a7884; }
+      .tiny { font: 400 11px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #7b8792; }
+      .cell { fill: #ffffff; stroke: #dde4eb; stroke-width: 1; }
+      .thead { fill: #e5ebf1; }
+      .button { fill: #128a2e; }
+      .buttonText { font: 700 15px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #ffffff; }
+      .ghost { fill: #f5f8fb; stroke: #cfd8e2; stroke-width: 1; }
+      .accent { fill: #1077b8; }
+      .ok { fill: #39a852; }
+      .warn { fill: #f0a429; }
+      .p0 { fill: #e9f8ee; stroke: #8ad49b; }
+      .p1 { fill: #fff8e8; stroke: #e7c06a; }
+      .mono { font: 500 13px "SFMono-Regular", "Menlo", monospace; fill: #263540; }
+      .white { fill: #ffffff; }
+      .loginText { font: 700 44px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #f8fbff; }
+      .loginAccent { fill: #4ed05a; }
+      .inputText { font: 600 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #7a858e; }
+      .kpi { font: 700 24px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #263540; }
+    </style>
+  </defs>
+
+  <rect class="page" x="0" y="0" width="1600" height="2200"/>
+  <text class="title" x="48" y="72">XDP MVP 原型图</text>
+  <text class="subtitle" x="50" y="106">v0.2 Product Console / 严格 P0：登录、采集配置、解析配置、索引配置、搜索页</text>
+  <rect class="p0" x="1180" y="48" width="150" height="34" rx="17"/>
+  <text class="small" x="1215" y="70">P0 上线必需</text>
+  <rect class="p1" x="1348" y="48" width="190" height="34" rx="17"/>
+  <text class="small" x="1378" y="70">P1 后续增强入口</text>
+
+  <!-- Login -->
+  <rect class="frame" x="40" y="135" width="1520" height="360" rx="18"/>
+  <rect x="58" y="153" width="1484" height="324" rx="12" fill="url(#loginBg)"/>
+  <g opacity="0.18" font-family="SFMono-Regular, Menlo, monospace" font-size="12" fill="#34d399">
+    <text x="130" y="198">2026-06-21T09:30:00Z src=10.0.0.8 action=allow index=app service=api latency=34ms</text>
+    <text x="170" y="224">host=edge-01 sourcetype=syslog severity=info bytes=2048 pipeline=mvp-json-pipeline</text>
+    <text x="110" y="250">index=firewall | stats count as total by action, src_ip</text>
+    <text x="235" y="276">deadletter stage=json-parser error=invalid_json retryable=true</text>
+    <text x="150" y="302">events_app rows=179497 ttl=30d latest_event_time=2026-06-21T09:29:58Z</text>
+    <text x="205" y="328">runtime reload worker=ok agent=ok config_version=42</text>
+  </g>
+  <text class="loginText" x="688" y="290">XDP</text>
+  <text class="loginAccent" x="780" y="290" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="44">&gt;</text>
+  <text x="820" y="290" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="44" fill="#4ed05a">console</text>
+  <rect x="545" y="325" width="245" height="56" rx="4" fill="#f8fbff"/>
+  <text class="inputText" x="568" y="360">用户名</text>
+  <rect x="792" y="325" width="245" height="56" rx="0" fill="#f8fbff"/>
+  <text class="inputText" x="815" y="360">密码</text>
+  <rect class="button" x="1038" y="325" width="132" height="56" rx="4"/>
+  <text class="buttonText" x="1088" y="360">登录</text>
+  <text x="726" y="448" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-size="14" fill="#7d8994">© 2026 XDP · Build v0.2</text>
+  <rect class="p0" x="75" y="170" width="92" height="28" rx="14"/>
+  <text class="tiny" x="96" y="188">P0 登录</text>
+
+  <!-- Control shell for collection -->
+  <rect class="frame" x="40" y="535" width="730" height="430" rx="18"/>
+  <rect class="topbar" x="40" y="535" width="730" height="48" rx="18"/>
+  <text x="64" y="566" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#ffffff">XDP</text>
+  <text x="112" y="566" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#54c75b">&gt;</text>
+  <text class="navtext" x="175" y="566">采集配置</text>
+  <text class="navtext" x="270" y="566">解析配置</text>
+  <text class="navtext" x="365" y="566">索引配置</text>
+  <text class="navtext" x="460" y="566">搜索页</text>
+  <rect class="navactive" x="175" y="581" width="62" height="4"/>
+  <text class="frame-title" x="70" y="630">数据输入 / 采集配置</text>
+  <text class="frame-subtitle" x="70" y="656">P0 支持 HTTP JSON 与 Syslog UDP；其它输入类型作为规划入口。</text>
+  <rect class="cell thead" x="70" y="690" width="640" height="38"/>
+  <text class="label" x="92" y="714">类型</text>
+  <text class="label" x="365" y="714">输入</text>
+  <text class="label" x="610" y="714">操作</text>
+  <rect class="cell" x="70" y="728" width="640" height="64"/>
+  <text class="label" x="92" y="755">HTTP JSON</text>
+  <text class="small" x="92" y="777">通过 HTTP/HTTPS 接收 JSON 事件</text>
+  <text class="kpi" x="385" y="768">1</text>
+  <text class="accent" x="612" y="768" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="17">+ 新增</text>
+  <rect class="cell" x="70" y="792" width="640" height="64"/>
+  <text class="label" x="92" y="819">Syslog UDP</text>
+  <text class="small" x="92" y="841">监听 UDP syslog，写入默认 index</text>
+  <text class="kpi" x="385" y="832">1</text>
+  <text class="accent" x="612" y="832" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="17">+ 新增</text>
+  <rect class="cell" x="70" y="856" width="640" height="58"/>
+  <text class="small" x="92" y="891">TCP / File / Kafka / Script</text>
+  <rect class="p1" x="388" y="873" width="92" height="25" rx="12"/>
+  <text class="tiny" x="413" y="890">P1</text>
+  <text class="small" x="610" y="891" fill="#9aa5af">规划</text>
+
+  <!-- Parse -->
+  <rect class="frame" x="830" y="535" width="730" height="430" rx="18"/>
+  <rect class="topbar" x="830" y="535" width="730" height="48" rx="18"/>
+  <text x="854" y="566" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#ffffff">XDP</text>
+  <text x="902" y="566" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#54c75b">&gt;</text>
+  <text class="navtext" x="965" y="566">采集配置</text>
+  <text class="navtext" x="1060" y="566">解析配置</text>
+  <text class="navtext" x="1155" y="566">索引配置</text>
+  <text class="navtext" x="1250" y="566">搜索页</text>
+  <rect class="navactive" x="1060" y="581" width="62" height="4"/>
+  <text class="frame-title" x="860" y="630">字段 / 解析配置</text>
+  <text class="frame-subtitle" x="860" y="656">P0 只落地字段提取与字段转换，插件导入和字段规则库进入 P1。</text>
+  <rect class="cell thead" x="860" y="690" width="640" height="38"/>
+  <text class="label" x="882" y="714">能力类型</text>
+  <text class="label" x="1162" y="714">规则数</text>
+  <text class="label" x="1400" y="714">操作</text>
+  <rect class="cell" x="860" y="728" width="640" height="64"/>
+  <text class="label" x="882" y="755">字段提取</text>
+  <text class="small" x="882" y="777">JSON parser / Regex pattern / time_field</text>
+  <text class="kpi" x="1182" y="768">2</text>
+  <text class="accent" x="1402" y="768" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="17">+ 新增</text>
+  <rect class="cell" x="860" y="792" width="640" height="64"/>
+  <text class="label" x="882" y="819">字段转换</text>
+  <text class="small" x="882" y="841">field mapping / type convert</text>
+  <text class="kpi" x="1182" y="832">2</text>
+  <text class="accent" x="1402" y="832" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="17">+ 新增</text>
+  <rect class="cell" x="860" y="856" width="640" height="58"/>
+  <text class="small" x="882" y="891">字段别名 / 计算字段 / 产品解析插件</text>
+  <rect class="p1" x="1180" y="873" width="92" height="25" rx="12"/>
+  <text class="tiny" x="1205" y="890">P1</text>
+  <text class="small" x="1400" y="891" fill="#9aa5af">规划</text>
+
+  <!-- Index -->
+  <rect class="frame" x="40" y="1005" width="730" height="430" rx="18"/>
+  <rect class="topbar" x="40" y="1005" width="730" height="48" rx="18"/>
+  <text x="64" y="1036" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#ffffff">XDP</text>
+  <text x="112" y="1036" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#54c75b">&gt;</text>
+  <text class="navtext" x="175" y="1036">采集配置</text>
+  <text class="navtext" x="270" y="1036">解析配置</text>
+  <text class="navtext" x="365" y="1036">索引配置</text>
+  <text class="navtext" x="460" y="1036">搜索页</text>
+  <rect class="navactive" x="365" y="1051" width="62" height="4"/>
+  <text class="frame-title" x="70" y="1100">Indexes / 索引配置</text>
+  <text class="frame-subtitle" x="70" y="1126">管理逻辑 index 与 ClickHouse 物理表 events_&lt;index&gt;。</text>
+  <rect class="ghost" x="70" y="1160" width="145" height="54" rx="8"/>
+  <text class="small" x="90" y="1182">Index 数</text>
+  <text class="kpi" x="90" y="1204">3</text>
+  <rect class="ghost" x="230" y="1160" width="180" height="54" rx="8"/>
+  <text class="small" x="250" y="1182">默认 TTL</text>
+  <text class="kpi" x="250" y="1204">30d</text>
+  <rect class="ghost" x="425" y="1160" width="190" height="54" rx="8"/>
+  <text class="small" x="445" y="1182">存储</text>
+  <text class="kpi" x="445" y="1204">ClickHouse</text>
+  <rect class="button" x="630" y="1163" width="80" height="48" rx="6"/>
+  <text class="buttonText" x="644" y="1193">新增</text>
+  <rect class="cell thead" x="70" y="1245" width="640" height="38"/>
+  <text class="label" x="90" y="1269">index</text>
+  <text class="label" x="222" y="1269">物理表</text>
+  <text class="label" x="390" y="1269">数据量</text>
+  <text class="label" x="520" y="1269">最近写入</text>
+  <rect class="cell" x="70" y="1283" width="640" height="42"/>
+  <text class="mono" x="90" y="1309">app</text>
+  <text class="mono" x="222" y="1309">events_app</text>
+  <text class="small" x="390" y="1309">179,497</text>
+  <text class="small" x="520" y="1309">09:29:58</text>
+  <rect class="cell" x="70" y="1325" width="640" height="42"/>
+  <text class="mono" x="90" y="1351">firewall</text>
+  <text class="mono" x="222" y="1351">events_firewall</text>
+  <text class="small" x="390" y="1351">42,013</text>
+  <text class="small" x="520" y="1351">09:29:21</text>
+  <rect class="cell" x="70" y="1367" width="640" height="42"/>
+  <text class="mono" x="90" y="1393">audit</text>
+  <text class="mono" x="222" y="1393">events_audit</text>
+  <text class="small" x="390" y="1393">0</text>
+  <text class="small" x="520" y="1393">-</text>
+
+  <!-- Search summary card -->
+  <rect class="frame" x="830" y="1005" width="730" height="430" rx="18"/>
+  <rect class="topbar" x="830" y="1005" width="730" height="48" rx="18"/>
+  <text x="854" y="1036" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#ffffff">XDP</text>
+  <text x="902" y="1036" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="800" font-size="22" fill="#54c75b">&gt;</text>
+  <text class="navtext" x="965" y="1036">采集配置</text>
+  <text class="navtext" x="1060" y="1036">解析配置</text>
+  <text class="navtext" x="1155" y="1036">索引配置</text>
+  <text class="navtext" x="1250" y="1036">搜索页</text>
+  <rect class="navactive" x="1250" y="1051" width="48" height="4"/>
+  <text class="frame-title" x="860" y="1100">Search / SPL 搜索</text>
+  <text class="frame-subtitle" x="860" y="1126">输入 SPL，选择时间范围，查看事件、统计、字段和时间线。</text>
+  <rect class="white" x="860" y="1160" width="465" height="54" rx="6" stroke="#ccd6df"/>
+  <text class="mono" x="882" y="1194">index=app | stats count as total by service</text>
+  <rect class="ghost" x="1335" y="1160" width="104" height="54" rx="6"/>
+  <text class="label" x="1352" y="1194">最近24小时</text>
+  <rect class="button" x="1450" y="1160" width="70" height="54" rx="6"/>
+  <text class="buttonText" x="1468" y="1194">搜索</text>
+  <text class="small" x="860" y="1242">179,497 个事件 · 163ms · 无事件采样</text>
+  <rect x="860" y="1264" width="640" height="70" fill="#ffffff" stroke="#dde4eb"/>
+  <g fill="#42a5f5">
+    <rect x="890" y="1305" width="18" height="18"/>
+    <rect x="918" y="1288" width="18" height="35"/>
+    <rect x="946" y="1297" width="18" height="26"/>
+    <rect x="974" y="1278" width="18" height="45"/>
+    <rect x="1002" y="1292" width="18" height="31"/>
+    <rect x="1030" y="1284" width="18" height="39"/>
+    <rect x="1058" y="1302" width="18" height="21"/>
+    <rect x="1086" y="1274" width="18" height="49"/>
+    <rect x="1114" y="1291" width="18" height="32"/>
+    <rect x="1142" y="1282" width="18" height="41"/>
+    <rect x="1170" y="1300" width="18" height="23"/>
+  </g>
+  <rect class="cell thead" x="860" y="1360" width="640" height="34"/>
+  <text class="label" x="882" y="1382">service</text>
+  <text class="label" x="1190" y="1382">total</text>
+  <rect class="cell" x="860" y="1394" width="640" height="34"/>
+  <text class="small" x="882" y="1417">demo</text>
+  <text class="small" x="1190" y="1417">102,340</text>
+
+  <!-- Full search composition -->
+  <rect class="frame" x="40" y="1480" width="1520" height="620" rx="18"/>
+  <text class="frame-title" x="75" y="1535">搜索页完整布局细化</text>
+  <text class="frame-subtitle" x="75" y="1562">P0 原型重点：顶部搜索区、时间范围、状态栏、时间柱状图、字段侧栏、事件/统计结果与分页。</text>
+  <rect class="white" x="75" y="1595" width="1090" height="58" rx="6" stroke="#cbd5df"/>
+  <text class="mono" x="98" y="1630">index=firewall action=deny | stats count as total by src_ip</text>
+  <rect class="ghost" x="1178" y="1595" width="165" height="58" rx="6"/>
+  <text class="label" x="1212" y="1630">所有时间</text>
+  <rect class="button" x="1356" y="1595" width="132" height="58" rx="6"/>
+  <text class="buttonText" x="1402" y="1631">搜索</text>
+  <text class="small" x="75" y="1688">179,497 个事件 · 26/06/17 23:54:04 之前 · 执行完成 · 无事件采样</text>
+  <g>
+    <rect class="ghost" x="75" y="1715" width="1415" height="94" rx="6"/>
+    <g fill="#8ec9f6">
+      <rect x="105" y="1770" width="22" height="26"/>
+      <rect x="142" y="1748" width="22" height="48"/>
+      <rect x="179" y="1762" width="22" height="34"/>
+      <rect x="216" y="1738" width="22" height="58"/>
+      <rect x="253" y="1768" width="22" height="28"/>
+      <rect x="290" y="1750" width="22" height="46"/>
+      <rect x="327" y="1728" width="22" height="68"/>
+      <rect x="364" y="1764" width="22" height="32"/>
+      <rect x="401" y="1742" width="22" height="54"/>
+      <rect x="438" y="1756" width="22" height="40"/>
+      <rect x="475" y="1732" width="22" height="64"/>
+      <rect x="512" y="1766" width="22" height="30"/>
+      <rect x="549" y="1748" width="22" height="48"/>
+      <rect x="586" y="1760" width="22" height="36"/>
+      <rect x="623" y="1740" width="22" height="56"/>
+      <rect x="660" y="1772" width="22" height="24"/>
+    </g>
+  </g>
+  <rect x="75" y="1834" width="260" height="210" fill="#ffffff" stroke="#dbe3ea"/>
+  <text class="label" x="100" y="1865">字段</text>
+  <text class="small" x="100" y="1900">已选字段</text>
+  <text class="mono" x="118" y="1926">src_ip</text>
+  <text class="mono" x="118" y="1950">action</text>
+  <text class="small" x="100" y="1984">所有字段</text>
+  <text class="mono" x="118" y="2010">bytes · host · service</text>
+  <text class="mono" x="118" y="2034">sourcetype · source</text>
+  <rect x="360" y="1834" width="1130" height="210" fill="#ffffff" stroke="#dbe3ea"/>
+  <rect class="thead" x="360" y="1834" width="1130" height="42"/>
+  <text class="label" x="392" y="1861">时间</text>
+  <text class="label" x="555" y="1861">事件</text>
+  <text class="label" x="1250" y="1861">分页</text>
+  <text class="small" x="392" y="1908">26/05/11 11:14:47.000</text>
+  <text class="mono" x="555" y="1908">src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048</text>
+  <line x1="360" y1="1927" x2="1490" y2="1927" stroke="#edf1f5"/>
+  <text class="small" x="392" y="1965">26/05/11 11:14:48.000</text>
+  <text class="mono" x="555" y="1965">src=10.0.2.9 dst=172.16.0.5 action=allow bytes=1024</text>
+  <line x1="360" y1="1984" x2="1490" y2="1984" stroke="#edf1f5"/>
+  <text class="small" x="392" y="2022">26/05/11 11:14:49.000</text>
+  <text class="mono" x="555" y="2022">src=10.0.3.7 dst=172.16.0.6 action=deny bytes=512</text>
+  <rect class="ghost" x="1250" y="2002" width="34" height="30" rx="4"/>
+  <text class="small" x="1263" y="2022">1</text>
+  <text class="small" x="1302" y="2022">2</text>
+  <text class="small" x="1335" y="2022">3</text>
+  <text class="accent" x="1398" y="2022" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700" font-size="13">下一步</text>
+
+  <text class="tiny" x="50" y="2150">说明：本原型图只覆盖 XDP_产品需求文档中的 P0 MVP 范围；P1 能力以规划入口或标签展示，不作为上线阻塞项。</text>
+</svg>

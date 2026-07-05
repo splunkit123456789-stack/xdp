@@ -1,0 +1,101 @@
+services:
+  mysql:
+    image: mysql:8.4.1
+    environment:
+      MYSQL_ROOT_PASSWORD: xdp
+      MYSQL_DATABASE: xdp
+      MYSQL_USER: xdp
+      MYSQL_PASSWORD: xdp
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uxdp", "-pxdp"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_USER: xdp
+      CLICKHOUSE_PASSWORD: xdp
+      CLICKHOUSE_DB: xdp
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+
+  redis:
+    image: redis:7.4
+    ports:
+      - "6379:6379"
+
+  kafka:
+    image: apache/kafka:4.0.0
+    ports:
+      - "9092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://127.0.0.1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  xdp-api:
+    build:
+      context: ../..
+    command: xdp-api
+    environment:
+      XDP_API_ADDR: :8080
+      XDP_OUTPUT: clickhouse
+      XDP_CLICKHOUSE_ENDPOINT: http://clickhouse:8123
+      XDP_CLICKHOUSE_USERNAME: xdp
+      XDP_CLICKHOUSE_PASSWORD: xdp
+      XDP_MYSQL_DSN: xdp:xdp@tcp(mysql:3306)/xdp?parseTime=true&multiStatements=true
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - clickhouse
+
+  xdp-worker:
+    build:
+      context: ../..
+    command: xdp-worker
+    environment:
+      XDP_KAFKA_BROKERS: kafka:9092
+      XDP_PIPELINE_CONFIG: /app/configs/pipelines
+      XDP_CONFIG_API: http://xdp-api:8080
+      XDP_CONFIG_RELOAD_INTERVAL: 2s
+    depends_on:
+      - kafka
+      - xdp-api
+
+  xdp-writer:
+    build:
+      context: ../..
+    command: xdp-writer
+    environment:
+      XDP_KAFKA_BROKERS: kafka:9092
+      XDP_CLICKHOUSE_ENDPOINT: http://clickhouse:8123
+      XDP_CLICKHOUSE_USERNAME: xdp
+      XDP_CLICKHOUSE_PASSWORD: xdp
+    depends_on:
+      - kafka
+      - clickhouse

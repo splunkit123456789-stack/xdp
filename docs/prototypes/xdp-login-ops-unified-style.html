@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>XDP 登录页控制台色系原型</title>
+  <style>
+    :root {
+      --ops-bg: #f4f7fb;
+      --ops-surface: #ffffff;
+      --ops-surface-soft: #f8fbfd;
+      --ops-ink: #1f2d3d;
+      --ops-muted: #657589;
+      --ops-line: #d9e2ea;
+      --ops-topbar: #18212a;
+      --ops-primary: #13bfb4;
+      --ops-primary-dark: #0f8f89;
+      --ops-blue: #2878b8;
+      --ops-green: #28b76f;
+      --ops-danger: #dc5b4b;
+      --ops-radius: 22px;
+      --ops-shadow: 0 18px 48px rgba(29, 49, 70, 0.12);
+      --ops-shadow-strong: 0 28px 70px rgba(24, 33, 42, 0.16);
+      --ops-sans: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --ops-mono: "SFMono-Regular", "Menlo", "Consolas", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      font-family: var(--ops-sans);
+      color: var(--ops-ink);
+      background: #eef4f7;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .login-shell {
+      position: relative;
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 38px;
+      overflow-x: hidden;
+      padding: 22px clamp(18px, 4vw, 56px) 28px;
+      background:
+        radial-gradient(circle at 74% 8%, rgba(40, 120, 184, 0.14), transparent 24rem),
+        radial-gradient(circle at 10% 28%, rgba(19, 191, 180, 0.18), transparent 26rem),
+        linear-gradient(135deg, #eef4f7 0%, #f8fbfc 46%, #edf5f3 100%);
+    }
+
+    .page-grid {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        repeating-linear-gradient(90deg, transparent 0 94px, rgba(23, 129, 138, 0.08) 95px, transparent 96px),
+        repeating-linear-gradient(0deg, transparent 0 128px, rgba(40, 120, 184, 0.055) 129px, transparent 130px);
+      opacity: 0.86;
+    }
+
+    .topbar,
+    .login-layout,
+    footer {
+      position: relative;
+      z-index: 1;
+    }
+
+    .topbar {
+      width: min(1500px, 100%);
+      min-height: 62px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin: 0 auto;
+      border: 1px solid #24313d;
+      border-radius: 999px;
+      padding: 0 18px 0 24px;
+      color: #edf6fb;
+      background: var(--ops-topbar);
+      box-shadow: 0 12px 28px rgba(24, 33, 42, 0.22);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-right: auto;
+      color: #fff;
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+    }
+
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--ops-primary), var(--ops-blue));
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 10px 24px rgba(19, 191, 180, 0.28);
+      font-weight: 600;
+    }
+
+    .pill {
+      border: 1px solid rgba(19, 191, 180, 0.42);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: #e7fffb;
+      background: rgba(19, 191, 180, 0.12);
+      font: 700 12px var(--ops-mono);
+      letter-spacing: 0.08em;
+    }
+
+    .login-layout {
+      width: min(1280px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(380px, 480px);
+      align-items: stretch;
+      gap: 28px;
+      margin: auto;
+    }
+
+    .hero-card,
+    .login-card {
+      border: 1px solid var(--ops-line);
+      border-radius: var(--ops-radius);
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--ops-shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .hero-card {
+      position: relative;
+      min-height: 520px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      overflow: hidden;
+      padding: clamp(30px, 5vw, 58px);
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      right: -92px;
+      bottom: -76px;
+      width: 360px;
+      height: 260px;
+      border: 1px solid rgba(19, 191, 180, 0.18);
+      border-radius: 60px;
+      background: linear-gradient(135deg, rgba(19, 191, 180, 0.18), rgba(40, 120, 184, 0.12));
+      transform: rotate(18deg);
+    }
+
+    .eyebrow {
+      margin: 0;
+      color: var(--ops-muted);
+      font: 700 13px var(--ops-mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .hero-card h1 {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 12px;
+      margin: 18px 0 0;
+    }
+
+    .gradient-text {
+      display: inline-block;
+      width: max-content;
+      padding-right: 0.18em;
+      color: transparent;
+      background: linear-gradient(90deg, var(--ops-primary), var(--ops-blue) 58%, var(--ops-green));
+      background-clip: text;
+      -webkit-background-clip: text;
+      font-size: clamp(48px, 6.4vw, 84px);
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.025em;
+      text-shadow: 0 18px 70px rgba(19, 191, 180, 0.16);
+    }
+
+    .hero-card strong {
+      max-width: 650px;
+      color: #162635;
+      font-size: clamp(24px, 2.8vw, 36px);
+      font-weight: 700;
+      line-height: 1.16;
+      letter-spacing: -0.05em;
+    }
+
+    .lede {
+      position: relative;
+      z-index: 1;
+      max-width: 560px;
+      margin: 24px 0 0;
+      color: var(--ops-muted);
+      font-size: 17px;
+      line-height: 1.7;
+    }
+
+    .chip-row {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 34px;
+    }
+
+    .chip-row span,
+    .badge {
+      border: 1px solid #b9e8e4;
+      border-radius: 999px;
+      color: #08776f;
+      background: #e4f8f5;
+      font-weight: 800;
+    }
+
+    .chip-row span {
+      padding: 8px 12px;
+      color: #315567;
+      background: #fff;
+      border-color: #d9e2ea;
+    }
+
+    .login-card {
+      align-self: center;
+      min-height: 470px;
+      padding: 28px;
+      box-shadow: var(--ops-shadow-strong);
+    }
+
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 16px;
+      color: var(--ops-ink);
+      font-weight: 800;
+    }
+
+    .login-card h2 {
+      margin: 8px 0 0;
+      color: #162635;
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: -0.04em;
+    }
+
+    .badge {
+      padding: 4px 9px;
+      font-size: 12px;
+    }
+
+    .status-dot {
+      width: 14px;
+      height: 14px;
+      margin-top: 4px;
+      border-radius: 999px;
+      background: var(--ops-green);
+      box-shadow: 0 0 0 7px rgba(40, 183, 111, 0.12), 0 0 28px rgba(40, 183, 111, 0.46);
+    }
+
+    .login-form {
+      display: grid;
+      gap: 16px;
+    }
+
+    .login-form label {
+      display: grid;
+      gap: 8px;
+      color: #344558;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .login-form input {
+      width: 100%;
+      height: 56px;
+      border: 1px solid #cfd9e3;
+      border-radius: 14px;
+      outline: none;
+      padding: 0 16px;
+      color: #1c2c3d;
+      background: #fff;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+    }
+
+    .login-form input::placeholder {
+      color: #9aa8b7;
+    }
+
+    .login-form input:focus {
+      border-color: var(--ops-primary);
+      background: #fff;
+      box-shadow: 0 0 0 4px rgba(19, 191, 180, 0.14);
+    }
+
+    .login-form button {
+      height: 56px;
+      margin-top: 6px;
+      border: 0;
+      border-radius: 14px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--ops-primary), var(--ops-green));
+      box-shadow: 0 14px 28px rgba(19, 191, 180, 0.24);
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .error-box {
+      margin: 16px 0 0;
+      border: 1px solid rgba(220, 91, 75, 0.28);
+      border-radius: 14px;
+      padding: 10px 12px;
+      color: #b43f32;
+      background: rgba(220, 91, 75, 0.08);
+    }
+
+    footer {
+      justify-self: center;
+      color: #758599;
+      font-size: 13px;
+    }
+
+    @media (max-width: 980px) {
+      .login-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .login-shell {
+        gap: 22px;
+        padding: 14px 14px 22px;
+      }
+
+      .topbar {
+        min-height: auto;
+        align-items: flex-start;
+        border-radius: 24px;
+        padding: 14px;
+      }
+
+      .pill {
+        display: none;
+      }
+
+      .hero-card {
+        min-height: auto;
+        padding: 24px;
+      }
+
+      .gradient-text {
+        font-size: clamp(44px, 13vw, 64px);
+      }
+
+      .hero-card strong {
+        font-size: 22px;
+      }
+
+      .login-card {
+        min-height: auto;
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="login-shell" data-testid="login-page">
+    <div class="page-grid"></div>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">X</span><span>XDP&gt;Console</span></div>
+      <span class="pill">MVP ACCESS</span>
+    </header>
+
+    <section class="login-layout">
+      <section class="hero-card" aria-label="XDP 登录入口">
+        <p class="eyebrow">HTML CRUD PROTOTYPE</p>
+        <h1><span class="gradient-text">XDP</span><strong>可信数据入口</strong></h1>
+        <p class="lede">采集、解析、索引与搜索统一入口，登录后进入 XDP 控制台。</p>
+        <div class="chip-row">
+          <span>采集配置</span>
+          <span>解析配置</span>
+          <span>索引配置</span>
+          <span>SPL 搜索</span>
+        </div>
+      </section>
+
+      <section class="login-card">
+        <div class="card-head">
+          <div><p class="eyebrow">SIGN IN</p><h2>登录控制台</h2></div>
+          <span class="status-dot"></span>
+        </div>
+        <form class="login-form">
+          <label>用户名<input placeholder="请输入用户名" autocomplete="username" /></label>
+          <label>密码<input placeholder="请输入密码" type="password" autocomplete="current-password" /></label>
+          <button type="button">登录</button>
+        </form>
+      </section>
+    </section>
+
+    <footer>© 2026 XDP Console</footer>
+  </main>
+</body>
+</html>
