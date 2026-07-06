@@ -7,7 +7,7 @@ output="$(
 
 printf '%s\n' "$output" | grep -F '== start dependencies =='
 printf '%s\n' "$output" | grep -F 'docker compose -f deployments/docker-compose/docker-compose.yaml up -d --build mysql clickhouse kafka minio redis'
-printf '%s\n' "$output" | grep -F 'xdp.raw.http xdp.raw.syslog xdp.output.default xdp.deadletter.writer'
+printf '%s\n' "$output" | grep -F 'xdp.raw.syslog xdp.output.default xdp.deadletter.writer'
 printf '%s\n' "$output" | grep -F '== start backend services =='
 printf '%s\n' "$output" | grep -F 'xdp-api xdp-worker xdp-writer'
 if printf '%s\n' "$output" | grep -F 'up -d --build xdp-api xdp-agent xdp-worker xdp-writer' >/dev/null; then

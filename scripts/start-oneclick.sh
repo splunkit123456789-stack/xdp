@@ -32,14 +32,16 @@ API_AGENT_BASE_URL="${XDP_AGENT_BASE_URL:-http://host.docker.internal:$HOST_AGEN
 
 DRY_RUN=0
 STOP_ONLY=0
+CLEAN_TEST_ENV=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/start-oneclick.sh [--dry-run] [--stop]
+  bash scripts/start-oneclick.sh [--dry-run] [--clean] [--stop]
 
 Options:
   --dry-run  Print startup steps without executing commands.
+  --clean    Reset ClickHouse event tables, MySQL business config, and Kafka test topics before startup.
   --stop     Stop frontend dev server, host Agent, and Docker Compose services started by this script.
 
 Environment overrides:
@@ -56,6 +58,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run)
       DRY_RUN=1
+      ;;
+    --clean)
+      CLEAN_TEST_ENV=1
       ;;
     --stop)
       STOP_ONLY=1
@@ -209,13 +214,26 @@ prepare_kafka_topics() {
   local topic
   printf '== prepare kafka topics ==\n'
   if [ "$DRY_RUN" = "1" ]; then
-    printf 'docker compose -f %s exec -T kafka kafka-topics --create xdp.raw.http xdp.raw.syslog xdp.output.default xdp.deadletter.writer\n' "$COMPOSE_FILE"
+    printf 'docker compose -f %s exec -T kafka kafka-topics --create xdp.raw.syslog xdp.output.default xdp.deadletter.writer\n' "$COMPOSE_FILE"
     return 0
   fi
   wait_kafka
-  for topic in "xdp.raw.http" "xdp.raw.syslog" "xdp.output.default" "xdp.deadletter.writer"; do
+  for topic in "xdp.raw.syslog" "xdp.output.default" "xdp.deadletter.writer"; do
     docker compose -f "$COMPOSE_FILE" exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic "$topic" --partitions 1 --replication-factor 1 >/dev/null
   done
+}
+
+reset_test_environment() {
+  if [ "$CLEAN_TEST_ENV" != "1" ]; then
+    return 0
+  fi
+  printf '== reset test environment ==\n'
+  run_env \
+    COMPOSE_FILE="$COMPOSE_FILE" \
+    CLICKHOUSE_URL="$CLICKHOUSE_URL" \
+    CLICKHOUSE_USER="$CLICKHOUSE_USER" \
+    CLICKHOUSE_PASSWORD="$CLICKHOUSE_PASSWORD" \
+    bash scripts/reset-test-env.sh
 }
 
 start_dependencies() {
@@ -254,6 +272,21 @@ stop_host_agent() {
   fi
 }
 
+stop_stale_host_agent_ports() {
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'kill stale xdp-agent on %s if present\n' "$HOST_AGENT_ADDR"
+    return 0
+  fi
+  local host_agent_tcp_port pids pid
+  host_agent_tcp_port="${HOST_AGENT_ADDR##*:}"
+  pids="$(lsof -tiTCP:"$host_agent_tcp_port" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in $pids; do
+    if ps -p "$pid" -o command= 2>/dev/null | grep -q 'xdp-agent'; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 stop_legacy_agent_containers() {
   if [ "$DRY_RUN" = "1" ]; then
     printf 'docker ps -aq --filter label=com.docker.compose.service=xdp-agent | xargs -r docker rm -f\n'
@@ -273,6 +306,7 @@ stop_legacy_agent_containers() {
 start_host_agent() {
   printf '== start host agent ==\n'
   stop_host_agent
+  stop_stale_host_agent_ports
   stop_legacy_agent_containers
   if [ "$DRY_RUN" = "1" ]; then
     print_cmd env \
@@ -388,6 +422,7 @@ write_compose_override
 build_backend_binaries
 start_dependencies
 prepare_kafka_topics
+reset_test_environment
 run_clickhouse_migrations
 start_backend_services
 start_host_agent

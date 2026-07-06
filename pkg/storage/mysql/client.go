@@ -128,6 +128,24 @@ type AuthSeed struct {
 	Source       string
 }
 
+type PluginRecord struct {
+	PluginCode       string
+	PluginType       string
+	PluginVersion    string
+	Name             string
+	Description      string
+	Runtime          string
+	Entrypoint       string
+	Status           string
+	Checksum         string
+	Signature        string
+	ConfigSchema     json.RawMessage
+	UISchema         json.RawMessage
+	InputSchema      json.RawMessage
+	OutputSchema     json.RawMessage
+	PermissionSchema json.RawMessage
+}
+
 func Open(cfg Config) (*Client, error) {
 	dsn := cfg.DSN
 	if dsn == "" {
@@ -171,6 +189,7 @@ func (c *Client) Migrate(ctx context.Context) error {
 
 func (c *Client) UpsertPlugin(ctx context.Context, meta plugin.Metadata) error {
 	configSchema, _ := json.Marshal(meta.ConfigSchema)
+	uiSchema, _ := json.Marshal(meta.UISchema)
 	inputSchema, _ := json.Marshal(meta.InputSchema)
 	outputSchema, _ := json.Marshal(meta.OutputSchema)
 	permissionSchema, _ := json.Marshal(meta.PermissionSchema)
@@ -178,12 +197,12 @@ func (c *Client) UpsertPlugin(ctx context.Context, meta plugin.Metadata) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, config_schema, input_schema, output_schema, permission_schema, status) SELECT UUID(), id, ?, ?, ?, ?, ?, ?, 'active' FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE runtime = VALUES(runtime), config_schema = VALUES(config_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), status = 'active'`, meta.Version, meta.Runtime, string(configSchema), string(inputSchema), string(outputSchema), string(permissionSchema), string(meta.Type), meta.Code)
+	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, config_schema, ui_schema, input_schema, output_schema, permission_schema, status) SELECT UUID(), id, ?, ?, ?, ?, ?, ?, ?, 'active' FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE runtime = VALUES(runtime), config_schema = VALUES(config_schema), ui_schema = VALUES(ui_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), status = 'active'`, meta.Version, meta.Runtime, string(configSchema), string(uiSchema), string(inputSchema), string(outputSchema), string(permissionSchema), string(meta.Type), meta.Code)
 	return err
 }
 
 func (c *Client) ListPlugins(ctx context.Context) ([]plugin.Metadata, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT p.type, p.code, p.name, COALESCE(p.description, ''), pv.version, pv.runtime, pv.config_schema FROM plugins p JOIN plugin_versions pv ON pv.plugin_id = p.id WHERE p.status = 'active' AND pv.status = 'active' ORDER BY p.type, p.code`)
+	rows, err := c.db.QueryContext(ctx, `SELECT p.type, p.code, p.name, COALESCE(p.description, ''), pv.version, pv.runtime, pv.config_schema, pv.ui_schema, pv.input_schema, pv.output_schema, pv.permission_schema FROM plugins p JOIN plugin_versions pv ON pv.plugin_id = p.id WHERE p.status = 'active' AND pv.status = 'active' ORDER BY p.type, p.code`)
 	if err != nil {
 		return nil, err
 	}
@@ -191,13 +210,70 @@ func (c *Client) ListPlugins(ctx context.Context) ([]plugin.Metadata, error) {
 	items := []plugin.Metadata{}
 	for rows.Next() {
 		var meta plugin.Metadata
-		var typ, schemaText string
-		if err := rows.Scan(&typ, &meta.Code, &meta.Name, &meta.Description, &meta.Version, &meta.Runtime, &schemaText); err != nil {
+		var typ, configSchema, uiSchema, inputSchema, outputSchema, permissionSchema string
+		if err := rows.Scan(&typ, &meta.Code, &meta.Name, &meta.Description, &meta.Version, &meta.Runtime, &configSchema, &uiSchema, &inputSchema, &outputSchema, &permissionSchema); err != nil {
 			return nil, err
 		}
 		meta.Type = plugin.Type(typ)
-		_ = json.Unmarshal([]byte(schemaText), &meta.ConfigSchema)
+		_ = json.Unmarshal([]byte(configSchema), &meta.ConfigSchema)
+		_ = json.Unmarshal([]byte(uiSchema), &meta.UISchema)
+		_ = json.Unmarshal([]byte(inputSchema), &meta.InputSchema)
+		_ = json.Unmarshal([]byte(outputSchema), &meta.OutputSchema)
+		_ = json.Unmarshal([]byte(permissionSchema), &meta.PermissionSchema)
 		items = append(items, meta)
+	}
+	return items, rows.Err()
+}
+
+func (c *Client) UpsertPluginRecord(ctx context.Context, item PluginRecord) error {
+	if item.Status == "" {
+		item.Status = "disabled"
+	}
+	if len(item.ConfigSchema) == 0 {
+		item.ConfigSchema = json.RawMessage(`{}`)
+	}
+	if len(item.UISchema) == 0 {
+		item.UISchema = json.RawMessage(`{}`)
+	}
+	if len(item.InputSchema) == 0 {
+		item.InputSchema = json.RawMessage(`{}`)
+	}
+	if len(item.OutputSchema) == 0 {
+		item.OutputSchema = json.RawMessage(`{}`)
+	}
+	if len(item.PermissionSchema) == 0 {
+		item.PermissionSchema = json.RawMessage(`{}`)
+	}
+	if item.Runtime == "" {
+		item.Runtime = "go_builtin"
+	}
+	if item.PluginVersion == "" {
+		item.PluginVersion = "1.0.0"
+	}
+	if item.Name == "" {
+		item.Name = item.PluginCode
+	}
+	_, err := c.db.ExecContext(ctx, `INSERT INTO plugins (id, type, code, name, description, status) VALUES (UUID(), ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = VALUES(status)`, item.PluginType, item.PluginCode, item.Name, item.Description, item.Status)
+	if err != nil {
+		return err
+	}
+	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, entrypoint, config_schema, ui_schema, input_schema, output_schema, permission_schema, checksum, signature, status) SELECT UUID(), id, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ? FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE runtime = VALUES(runtime), entrypoint = VALUES(entrypoint), config_schema = VALUES(config_schema), ui_schema = VALUES(ui_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), checksum = VALUES(checksum), signature = VALUES(signature), status = VALUES(status)`, item.PluginVersion, item.Runtime, item.Entrypoint, string(item.ConfigSchema), string(item.UISchema), string(item.InputSchema), string(item.OutputSchema), string(item.PermissionSchema), item.Checksum, item.Signature, item.Status, item.PluginType, item.PluginCode)
+	return err
+}
+
+func (c *Client) ListPluginRecords(ctx context.Context) ([]PluginRecord, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT p.type, p.code, p.name, COALESCE(p.description, ''), p.status, pv.version, pv.runtime, COALESCE(pv.entrypoint, ''), pv.config_schema, pv.ui_schema, pv.input_schema, pv.output_schema, pv.permission_schema, COALESCE(pv.checksum, ''), COALESCE(pv.signature, ''), pv.status FROM plugins p JOIN plugin_versions pv ON pv.plugin_id = p.id WHERE p.deleted_at IS NULL ORDER BY p.type, p.code, pv.version`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PluginRecord{}
+	for rows.Next() {
+		var item PluginRecord
+		if err := rows.Scan(&item.PluginType, &item.PluginCode, &item.Name, &item.Description, &item.Status, &item.PluginVersion, &item.Runtime, &item.Entrypoint, &item.ConfigSchema, &item.UISchema, &item.InputSchema, &item.OutputSchema, &item.PermissionSchema, &item.Checksum, &item.Signature, &item.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
 	}
 	return items, rows.Err()
 }
@@ -818,9 +894,12 @@ CREATE TABLE IF NOT EXISTS plugin_versions (
     runtime VARCHAR(32) NOT NULL DEFAULT 'go',
     entrypoint VARCHAR(512) NULL,
     config_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    ui_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     input_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     output_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     permission_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    checksum VARCHAR(128) NULL,
+    signature VARCHAR(255) NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -1020,6 +1099,25 @@ BEGIN
 END;
 CALL xdp_ensure_data_sources_compat();
 DROP PROCEDURE IF EXISTS xdp_ensure_data_sources_compat;
+
+DROP PROCEDURE IF EXISTS xdp_ensure_plugin_versions_compat;
+CREATE PROCEDURE xdp_ensure_plugin_versions_compat()
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'ui_schema') THEN
+        ALTER TABLE plugin_versions ADD COLUMN ui_schema JSON NOT NULL DEFAULT (JSON_OBJECT()) AFTER config_schema;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'checksum') THEN
+        ALTER TABLE plugin_versions ADD COLUMN checksum VARCHAR(128) NULL AFTER permission_schema;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'signature') THEN
+        ALTER TABLE plugin_versions ADD COLUMN signature VARCHAR(255) NULL AFTER checksum;
+    END IF;
+END;
+CALL xdp_ensure_plugin_versions_compat();
+DROP PROCEDURE IF EXISTS xdp_ensure_plugin_versions_compat;
 
 DROP PROCEDURE IF EXISTS xdp_ensure_parse_rules_compat;
 CREATE PROCEDURE xdp_ensure_parse_rules_compat()

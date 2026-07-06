@@ -1,7 +1,11 @@
 package mvp
 
 import (
+	"archive/zip"
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +19,10 @@ import (
 
 	"xdp/pkg/event"
 	"xdp/pkg/pipeline"
+	"xdp/pkg/plugin"
+	"xdp/pkg/search/splstats"
+	ch "xdp/pkg/storage/clickhouse"
+	mysqlstore "xdp/pkg/storage/mysql"
 	memoryoutput "xdp/plugins/output/memory"
 )
 
@@ -71,6 +79,195 @@ func TestAuthStatusReportsLoginRequirements(t *testing.T) {
 	if !response.Authenticated {
 		t.Fatalf("authenticated = false, response = %#v", response)
 	}
+}
+
+func TestPluginImportRegistersManifestAndListsPlugin(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	body := pluginZipBody(t, `{
+		"plugin_code": "demo-kafka",
+		"plugin_type": "input",
+		"version": "1.2.3",
+		"name": "Demo Kafka Input",
+		"description": "Kafka input plugin imported from Web",
+		"runtime": "go_builtin",
+		"entrypoint": "runtime/plugin",
+		"min_platform_version": "0.3.0",
+		"config_schema": {"required": ["brokers", "topic"]},
+		"ui_schema": {"groups": [{"title": "Kafka", "fields": ["brokers", "topic"]}]},
+		"input_schema": {"mode": "stream"},
+		"output_schema": {"fields": ["raw"]},
+		"capabilities": {"runtime_ingest": true}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/import?plugin_type=input", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/zip")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("import status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var imported struct {
+		PluginCode    string         `json:"plugin_code"`
+		PluginType    string         `json:"plugin_type"`
+		PluginVersion string         `json:"plugin_version"`
+		Runtime       string         `json:"runtime"`
+		Status        string         `json:"status"`
+		Checksum      string         `json:"checksum"`
+		ConfigSchema  map[string]any `json:"config_schema"`
+		UISchema      map[string]any `json:"ui_schema"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&imported); err != nil {
+		t.Fatalf("decode imported plugin: %v", err)
+	}
+	if imported.PluginCode != "demo-kafka" || imported.PluginType != "input" || imported.PluginVersion != "1.2.3" || imported.Runtime != "go_builtin" {
+		t.Fatalf("imported plugin identity = %#v", imported)
+	}
+	if imported.Status != "disabled" || imported.Checksum == "" {
+		t.Fatalf("imported plugin status/checksum = %#v", imported)
+	}
+	if _, ok := imported.ConfigSchema["required"]; !ok {
+		t.Fatalf("config_schema missing required: %#v", imported.ConfigSchema)
+	}
+	if _, ok := imported.UISchema["groups"]; !ok {
+		t.Fatalf("ui_schema missing groups: %#v", imported.UISchema)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins?type=input", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Plugins []struct {
+			PluginCode    string `json:"plugin_code"`
+			PluginType    string `json:"plugin_type"`
+			PluginVersion string `json:"plugin_version"`
+			Status        string `json:"status"`
+			Checksum      string `json:"checksum"`
+		} `json:"plugins"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list plugins: %v", err)
+	}
+	found := false
+	for _, item := range listed.Plugins {
+		if item.PluginCode == "demo-kafka" && item.PluginType == "input" && item.PluginVersion == "1.2.3" && item.Status == "disabled" && item.Checksum != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("imported plugin not found in list: %#v", listed.Plugins)
+	}
+}
+
+func TestPluginImportRejectsMismatchedType(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	body := pluginZipBody(t, `{
+		"plugin_code": "demo-parser",
+		"plugin_type": "parser",
+		"version": "1.0.0",
+		"name": "Demo Parser",
+		"runtime": "go_builtin",
+		"config_schema": {},
+		"ui_schema": {}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/import?plugin_type=search_command", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/zip")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assertErrorResponse(t, rec, http.StatusBadRequest, "PLUGIN_TYPE_MISMATCH")
+}
+
+func TestListPluginsOnlyExposesProductVisiblePluginTypes(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Plugins []PluginImportResponse `json:"plugins"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, item := range body.Plugins {
+		seen[item.PluginType+"/"+item.PluginCode] = true
+		if item.PluginType == "spl_function" {
+			t.Fatalf("spl_function should not be exposed in plugin management: %+v", item)
+		}
+	}
+	for _, key := range []string{"input/syslog", "parser/regex", "search_command/stats"} {
+		if !seen[key] {
+			t.Fatalf("expected visible plugin %s, got %#v", key, seen)
+		}
+	}
+	for _, key := range []string{"input/http-input", "parser/json-parser", "parser/props-conf-parser"} {
+		if seen[key] {
+			t.Fatalf("internal or not-yet-productized plugin %s should be hidden, got %#v", key, seen)
+		}
+	}
+}
+
+func TestPluginResponsesFromRecordsHidesHistoricalInternalPlugins(t *testing.T) {
+	items := []mysqlstore.PluginRecord{
+		{PluginType: "input", PluginCode: "syslog", PluginVersion: "1.0.0", Name: "Syslog Input", Runtime: "go_builtin", Status: "active"},
+		{PluginType: "input", PluginCode: "http-input", PluginVersion: "1.0.0", Name: "HTTP Input", Runtime: "go", Status: "active"},
+		{PluginType: "parser", PluginCode: "regex", PluginVersion: "1.0.0", Name: "Regex Parser", Runtime: "go_builtin", Status: "active"},
+		{PluginType: "parser", PluginCode: "json-parser", PluginVersion: "1.0.0", Name: "JSON Parser", Runtime: "go", Status: "active"},
+		{PluginType: "parser", PluginCode: "props-conf-parser", PluginVersion: "1.0.0", Name: "Props.conf Parser", Runtime: "go", Status: "active"},
+		{PluginType: "search_command", PluginCode: "stats", PluginVersion: "1.0.0", Name: "stats", Runtime: "go_builtin", Status: "active"},
+		{PluginType: "input", PluginCode: "demo-kafka", PluginVersion: "1.0.0", Name: "Demo Kafka", Runtime: "go_builtin", Status: "disabled", Checksum: "sha256:demo"},
+		{PluginType: "spl_function", PluginCode: "lower", PluginVersion: "1.0.0", Name: "lower", Runtime: "go_builtin", Status: "active", Checksum: "sha256:lower"},
+	}
+
+	plugins := pluginResponsesFromRecords(items, "")
+	seen := map[string]bool{}
+	for _, item := range plugins {
+		seen[item.PluginType+"/"+item.PluginCode] = true
+	}
+	for _, key := range []string{"input/syslog", "parser/regex", "search_command/stats", "input/demo-kafka"} {
+		if !seen[key] {
+			t.Fatalf("expected visible plugin %s, got %#v", key, seen)
+		}
+	}
+	for _, key := range []string{"input/http-input", "parser/json-parser", "parser/props-conf-parser", "spl_function/lower"} {
+		if seen[key] {
+			t.Fatalf("historical internal or unsupported plugin %s should be hidden, got %#v", key, seen)
+		}
+	}
+}
+
+func pluginZipBody(t *testing.T, manifest string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("manifest.json")
+	if err != nil {
+		t.Fatalf("create manifest: %v", err)
+	}
+	if _, err := w.Write([]byte(manifest)); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func TestLoginReturnsBearerTokenAndUserInfo(t *testing.T) {
@@ -462,7 +659,7 @@ func TestSaveDataSourceUpdatesRuntimePipelines(t *testing.T) {
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body := `{"id":"http-json","type":"http","name":"HTTP JSON","status":"active","addr":":8081","path":"/ingest","default_index":"hotreload","time_field":"@timestamp","parser":"json","pipeline_id":"mvp-json-pipeline"}`
+	body := `{"id":"syslog-hot-reload","type":"syslog","name":"Syslog Hot Reload","status":"active","addr":":5515","protocol":"udp","default_index":"hotreload","pipeline_id":"syslog-hot-reload-pipeline"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -485,21 +682,21 @@ func TestSaveDataSourceUpdatesRuntimePipelines(t *testing.T) {
 		t.Fatalf("decode runtime pipelines: %v", err)
 	}
 	for _, pipe := range response.Pipelines {
-		if pipe.Metadata.ID != pipeline.JSONPipelineID {
+		if pipe.Metadata.ID != "syslog-hot-reload-pipeline" {
 			continue
 		}
 		if got := pipe.Spec.Outputs[0].Config["index"]; got != "hotreload" {
 			t.Fatalf("runtime pipeline output index = %#v, want hotreload", got)
 		}
-		if got := pipe.Spec.Source.Config["internal_raw_topic"]; got != "xdp.raw.http" {
-			t.Fatalf("runtime pipeline internal_raw_topic = %#v, want xdp.raw.http", got)
+		if got := pipe.Spec.Source.Config["internal_raw_topic"]; got != "xdp.raw.syslog" {
+			t.Fatalf("runtime pipeline internal_raw_topic = %#v, want xdp.raw.syslog", got)
 		}
 		if _, ok := pipe.Spec.Source.Config["raw_topic"]; ok {
 			t.Fatalf("runtime pipeline still exposes raw_topic: %#v", pipe.Spec.Source.Config)
 		}
 		return
 	}
-	t.Fatalf("runtime pipelines missing %s: %#v", pipeline.JSONPipelineID, response.Pipelines)
+	t.Fatalf("runtime pipelines missing syslog-hot-reload-pipeline: %#v", response.Pipelines)
 }
 
 func TestSaveDataSourceRejectsRawTopicPayload(t *testing.T) {
@@ -508,7 +705,7 @@ func TestSaveDataSourceRejectsRawTopicPayload(t *testing.T) {
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body := `{"id":"http-json","type":"http","name":"HTTP JSON","status":"active","addr":":8081","path":"/ingest","default_index":"app","time_field":"@timestamp","parser":"json","raw_topic":"xdp.raw.http","pipeline_id":"mvp-json-pipeline"}`
+	body := `{"id":"syslog-raw-topic","type":"syslog","name":"Syslog Raw Topic","status":"active","addr":":5516","protocol":"udp","default_index":"app","raw_topic":"xdp.raw.syslog","pipeline_id":"syslog-raw-topic-pipeline"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -525,7 +722,7 @@ func TestSaveDataSourceBuildsParsingStages(t *testing.T) {
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	body := `{"id":"syslog-firewall","type":"syslog","name":"Firewall Syslog","status":"active","addr":":5514","protocol":"udp","default_index":"firewall","parser":"regex","regex_pattern":"src=(?P<src_ip>\\S+) dst=(?P<dst_ip>\\S+) action=(?P<action>\\S+) bytes=(?P<bytes>\\d+)","field_mapping":{"src":"src_ip"},"type_mapping":{"bytes":"int"},"pipeline_id":"firewall-syslog-pipeline"}`
+	body := `{"id":"syslog-plugin-source","type":"syslog","name":"Syslog Plugin Source","status":"active","addr":":5514","protocol":"udp","default_index":"audit","pipeline_id":"pipe_syslog_plugin_source"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -548,28 +745,90 @@ func TestSaveDataSourceBuildsParsingStages(t *testing.T) {
 		t.Fatalf("decode runtime pipelines: %v", err)
 	}
 	for _, pipe := range response.Pipelines {
-		if pipe.Metadata.ID != pipeline.FirewallPipelineID {
+		if pipe.Metadata.ID != "pipe_syslog_plugin_source" {
 			continue
 		}
-		foundMap := false
-		foundTypes := false
-		for _, stage := range pipe.Spec.Stages {
-			if stage.Plugin == "field-mapping" {
-				foundMap = true
-			}
-			if stage.Plugin == "type-convert" {
-				foundTypes = true
-			}
+		if pipe.Spec.Source.Plugin != "syslog" {
+			t.Fatalf("syslog collection source plugin = %q, want syslog", pipe.Spec.Source.Plugin)
 		}
-		if !foundMap {
-			t.Fatalf("runtime pipeline missing field-mapping stage: %#v", pipe.Spec.Stages)
-		}
-		if !foundTypes {
-			t.Fatalf("runtime pipeline missing type-convert stage: %#v", pipe.Spec.Stages)
+		if len(pipe.Spec.Stages) != 0 {
+			t.Fatalf("syslog collection pipeline must not include parse/transform/router stages: %#v", pipe.Spec.Stages)
 		}
 		return
 	}
-	t.Fatalf("runtime pipelines missing %s: %#v", pipeline.FirewallPipelineID, response.Pipelines)
+	t.Fatalf("runtime pipelines missing plugin syslog pipeline: %#v", response.Pipelines)
+}
+
+func TestSyslogRuntimePipelineWithoutParseRuleUsesStandardPlugins(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	body := `{"name":"No Rule Syslog","status":"active","plugin_code":"syslog","plugin_config":{"collector_port":55555,"transport_protocol":"UDP","encoding":"UTF-8","log_filter_enabled":false}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save datasource status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/runtime/pipelines", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runtime pipelines status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Pipelines []pipeline.Pipeline `json:"pipelines"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode runtime pipelines: %v", err)
+	}
+	for _, pipe := range response.Pipelines {
+		if pipe.Metadata.ID != "pipe_no_rule_syslog" {
+			continue
+		}
+		if pipe.Spec.Source.Plugin != "syslog" {
+			t.Fatalf("syslog runtime source plugin = %q, want syslog", pipe.Spec.Source.Plugin)
+		}
+		if len(pipe.Spec.Stages) != 0 {
+			t.Fatalf("syslog runtime pipeline without parse rules must not include stages: %#v", pipe.Spec.Stages)
+		}
+		if len(pipe.Spec.Outputs) == 0 || pipe.Spec.Outputs[0].Plugin != "memory-output" {
+			t.Fatalf("syslog runtime pipeline output = %#v", pipe.Spec.Outputs)
+		}
+		return
+	}
+	t.Fatalf("runtime pipelines missing no-rule syslog pipeline: %#v", response.Pipelines)
+}
+
+func TestDefaultDataSourcesDoNotSeedLegacyFirewallSyslog(t *testing.T) {
+	sources := defaultDataSources()
+	for _, source := range sources {
+		if source.Type == "syslog" && (source.Parser != "" || source.RegexPattern != "" || source.DefaultIndex == "firewall") {
+			t.Fatalf("default datasource contains legacy syslog parsing config: %#v", source)
+		}
+	}
+}
+
+func TestDefaultIndexConfigsOnlySeedSystemIndexes(t *testing.T) {
+	indexes := defaultIndexConfigs()
+	if _, ok := indexes["app"]; ok {
+		t.Fatalf("default indexes must not seed demo business index app: %#v", indexes)
+	}
+	if _, ok := indexes["firewall"]; ok {
+		t.Fatalf("default indexes must not seed demo business index firewall: %#v", indexes)
+	}
+	item, ok := indexes[ch.SystemUnparsedIndexName]
+	if !ok {
+		t.Fatalf("default indexes missing system unparsed index: %#v", indexes)
+	}
+	if !item.System || item.IndexType != "system" {
+		t.Fatalf("system unparsed metadata = %#v", item)
+	}
 }
 
 func TestSaveAndDeleteIndexConfig(t *testing.T) {
@@ -728,7 +987,14 @@ func TestSearchAPIStatsP0ResponseContract(t *testing.T) {
 		SPL       string `json:"spl"`
 		Index     string `json:"index"`
 		ElapsedMS int64  `json:"elapsed_ms"`
-		Stats     struct {
+		Command   struct {
+			PluginCode    string `json:"plugin_code"`
+			PluginType    string `json:"plugin_type"`
+			PluginVersion string `json:"plugin_version"`
+			Runtime       string `json:"runtime"`
+			OutputMode    string `json:"output_mode"`
+		} `json:"search_command"`
+		Stats struct {
 			Fields []string         `json:"fields"`
 			Rows   []map[string]any `json:"rows"`
 		} `json:"stats"`
@@ -738,6 +1004,9 @@ func TestSearchAPIStatsP0ResponseContract(t *testing.T) {
 	}
 	if response.Mode != "stats" || response.SPL != spl || response.Index != index {
 		t.Fatalf("response contract = %#v", response)
+	}
+	if response.Command.PluginCode != "stats" || response.Command.PluginType != "search" || response.Command.PluginVersion != "1.0.0" || response.Command.Runtime != "go_builtin" || response.Command.OutputMode != "stats" {
+		t.Fatalf("search command contract = %#v", response.Command)
 	}
 	for _, want := range []string{"service", "action", "total", "total_bytes", "avg_bytes", "min_bytes", "max_bytes"} {
 		if !containsString(response.Stats.Fields, want) {
@@ -791,6 +1060,94 @@ func TestSearchAPIStatsByBareSourceUsesSourceName(t *testing.T) {
 		t.Fatalf("stats row = %#v", response.Stats.Rows[0])
 	}
 }
+
+func TestSearchAPIStatsReturnsStandardErrorCode(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	spl := `index=searchp0 | stats values(raw) by service`
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("search status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.Error.Code != "SPL_STATS_UNSUPPORTED_FUNCTION" {
+		t.Fatalf("error code = %q, want SPL_STATS_UNSUPPORTED_FUNCTION; response = %#v", response.Error.Code, response)
+	}
+	if !strings.Contains(response.Error.Message, "unsupported stats function") {
+		t.Fatalf("error message = %q", response.Error.Message)
+	}
+}
+
+func TestStatsSearchPluginIsRegistered(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	_, meta, err := handler.reg.Get(plugin.TypeSearch, "stats", "1.0.0")
+	if err != nil {
+		t.Fatalf("stats search plugin should be registered: %v", err)
+	}
+	if meta.Code != "stats" || meta.Type != plugin.TypeSearch || meta.Runtime != "go_builtin" {
+		t.Fatalf("stats metadata = %#v", meta)
+	}
+	if meta.OutputSchema["mode"] != "stats" {
+		t.Fatalf("stats output schema = %#v", meta.OutputSchema)
+	}
+}
+
+func TestSearchAPIExecutesStatsThroughSearchPlugin(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	handler.reg = plugin.NewRegistry()
+	if err := handler.reg.Register(plugin.Metadata{Code: "stats", Name: "Test Stats", Type: plugin.TypeSearch, Version: "1.0.0", Runtime: "go_builtin", Labels: map[string]string{"output_mode": "stats"}}, func() any {
+		return failingStatsSearchPlugin{}
+	}); err != nil {
+		t.Fatalf("register test stats plugin: %v", err)
+	}
+
+	spl := `index=searchp0 | stats count by service`
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("search status = %d, want 502 from search plugin, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "stats search plugin failed") {
+		t.Fatalf("response body = %s, want stats plugin failure", rec.Body.String())
+	}
+}
+
+type failingStatsSearchPlugin struct{}
+
+func (failingStatsSearchPlugin) Metadata() plugin.Metadata {
+	return plugin.Metadata{Code: "stats", Name: "Test Stats", Type: plugin.TypeSearch, Version: "1.0.0", Runtime: "go_builtin"}
+}
+func (failingStatsSearchPlugin) Validate(config map[string]any) error { return nil }
+func (failingStatsSearchPlugin) Init(ctx plugin.InitContext, config map[string]any) error {
+	return nil
+}
+func (failingStatsSearchPlugin) Execute(ctx context.Context, input plugin.SearchInput, query splstats.Query) (splstats.Result, error) {
+	return splstats.Result{}, errors.New("stats plugin sentinel")
+}
+func (failingStatsSearchPlugin) Close() error { return nil }
 
 func TestSearchAPIEventsP0ResponseContract(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")

@@ -20,7 +20,6 @@ import (
 	kafkaoutput "xdp/plugins/output/kafka"
 	memoryoutput "xdp/plugins/output/memory"
 	s3output "xdp/plugins/output/s3"
-	jsonparser "xdp/plugins/parser/json"
 	propsconfparser "xdp/plugins/parser/propsconf"
 	regexparser "xdp/plugins/parser/regex"
 	indexrouter "xdp/plugins/router/indexrouter"
@@ -146,7 +145,6 @@ func fetchRuntimePipelines(ctx context.Context, configAPI string, configToken st
 
 func newRegistry() *plugin.Registry {
 	reg := plugin.NewRegistry()
-	must(jsonparser.Register(reg))
 	must(propsconfparser.Register(reg))
 	must(regexparser.Register(reg))
 	must(fieldmapping.Register(reg))

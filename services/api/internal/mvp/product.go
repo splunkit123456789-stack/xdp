@@ -48,6 +48,7 @@ type DataSource struct {
 	RuntimeResult    map[string]any    `json:"runtime_result,omitempty"`
 	PluginCode       string            `json:"plugin_code,omitempty"`
 	PluginVersion    string            `json:"plugin_version,omitempty"`
+	PluginRuntime    string            `json:"plugin_runtime,omitempty"`
 	Source           string            `json:"source,omitempty"`
 	Sourcetype       string            `json:"sourcetype,omitempty"`
 	PluginConfig     map[string]any    `json:"plugin_config,omitempty"`
@@ -289,32 +290,16 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 func defaultDataSources() map[string]DataSource {
 	now := time.Now().UTC()
 	return map[string]DataSource{
-		"http-json": {
-			ID:               "http-json",
-			Type:             "http",
-			Name:             "HTTP JSON",
-			Status:           "active",
-			Addr:             ":8081",
-			Path:             "/ingest",
-			DefaultIndex:     "app",
-			TimeField:        "@timestamp",
-			Parser:           "json",
-			InternalRawTopic: "xdp.raw.http",
-			PipelineID:       pipeline.JSONPipelineID,
-			UpdatedAt:        now,
-		},
-		"syslog-firewall": {
-			ID:               "syslog-firewall",
+		"syslog-default": {
+			ID:               "syslog-default",
 			Type:             "syslog",
-			Name:             "Firewall Syslog",
+			Name:             "Default Syslog",
 			Status:           "active",
 			Addr:             ":5514",
-			Protocol:         "udp",
-			DefaultIndex:     "firewall",
-			Parser:           "regex",
-			RegexPattern:     `src=(?P<src_ip>\S+) dst=(?P<dst_ip>\S+) action=(?P<action>\S+) bytes=(?P<bytes>\d+)`,
+			Protocol:         "UDP",
+			DefaultIndex:     "app",
 			InternalRawTopic: "xdp.raw.syslog",
-			PipelineID:       pipeline.FirewallPipelineID,
+			PipelineID:       pipeline.SyslogCollectionPipelineID,
 			UpdatedAt:        now,
 		},
 	}
@@ -322,20 +307,6 @@ func defaultDataSources() map[string]DataSource {
 
 func defaultIndexConfigs() map[string]IndexSummary {
 	items := map[string]IndexSummary{}
-	for _, source := range defaultDataSources() {
-		index := source.DefaultIndex
-		if index == "" {
-			index = "app"
-		}
-		items[indexKey(index)] = IndexSummary{
-			IndexName:  index,
-			Name:       index,
-			TTLDays:    30,
-			Storage:    "configured",
-			Status:     "active",
-			Configured: true,
-		}
-	}
 	items[indexKey(ch.SystemUnparsedIndexName)] = IndexSummary{
 		IndexName:  ch.SystemUnparsedIndexName,
 		Name:       ch.SystemUnparsedIndexName,
@@ -395,9 +366,6 @@ func (h *Handler) seedConfigStore(ctx context.Context) {
 		if h.mysql != nil {
 			if err := h.mysql.SeedDataSource(ctx, dataSourceToStore(source)); err != nil {
 				h.logger.Warn("seed datasource failed", "datasource", source.ID, "error", err)
-			}
-			if err := h.mysql.UpsertIndexConfig(ctx, indexToStore(indexFromDataSource(source))); err != nil {
-				h.logger.Warn("seed index failed", "index", source.DefaultIndex, "error", err)
 			}
 		}
 	}
@@ -670,7 +638,7 @@ func migrateLegacyRawTopic(source DataSource) DataSource {
 func defaultInternalRawTopic(source DataSource) string {
 	rawSource := strings.TrimSpace(source.Type)
 	if rawSource == "" {
-		rawSource = "http"
+		rawSource = "syslog"
 	}
 	return "xdp.raw." + rawSource
 }
@@ -684,7 +652,7 @@ func (h *Handler) dataSource(id string) DataSource {
 		}
 		return migrateLegacyRawTopic(source)
 	}
-	return migrateLegacyRawTopic(defaultDataSources()["http-json"])
+	return migrateLegacyRawTopic(defaultDataSources()["syslog-default"])
 }
 
 func (h *Handler) listDataSources(w http.ResponseWriter, r *http.Request) {
@@ -757,9 +725,6 @@ func (h *Handler) saveDataSource(w http.ResponseWriter, r *http.Request) {
 	if source.Name == "" {
 		source.Name = source.ID
 	}
-	if source.Parser == "" {
-		source.Parser = "json"
-	}
 	source = migrateLegacyRawTopic(source)
 	source.UpdatedAt = time.Now().UTC()
 	if h.mysql != nil {
@@ -824,74 +789,15 @@ func pipelineFromDataSource(source DataSource) pipeline.Pipeline {
 	}
 	switch source.Type {
 	case "syslog":
-		pipe := pipeline.FirewallSyslogPipeline()
+		pipe := pipeline.SyslogCollectionPipeline()
 		pipe.Metadata.ID = source.PipelineID
 		pipe.Metadata.Name = source.Name + " Pipeline"
 		pipe.Spec.Source.ID = source.ID
 		pipe.Spec.Source.Config = sourceConfig(source)
-		stages := make([]pipeline.StageSpec, 0, len(pipe.Spec.Stages)+1)
-		for i, stage := range pipe.Spec.Stages {
-			switch stage.ID {
-			case "parse-firewall":
-				if source.RegexPattern != "" {
-					stage.Config["pattern"] = source.RegexPattern
-				}
-			case "convert-types":
-				if len(source.TypeMapping) > 0 {
-					stage.Config = map[string]any{"fields": stringMapAny(source.TypeMapping)}
-				}
-			case "route-firewall":
-				stage.Config = map[string]any{"rules": []any{map[string]any{"when": "fields.action == 'deny'", "set": map[string]any{"metadata.index": source.DefaultIndex}, "add_tags": []any{"blocked"}}}}
-			}
-			pipe.Spec.Stages[i] = stage
-			stages = append(stages, stage)
-			if stage.ID == "parse-firewall" && len(source.FieldMapping) > 0 {
-				stages = append(stages, fieldMappingStage(source.FieldMapping))
-			}
-		}
-		pipe.Spec.Stages = stages
-		pipe.Spec.Outputs = []pipeline.OutputSpec{{ID: "set-index", Plugin: "memory-output", Version: "1.0.0", Config: map[string]any{"index": source.DefaultIndex}}}
 		return pipe
 	default:
-		pipe := pipeline.MVPJSONPipeline()
-		pipe.Metadata.ID = source.PipelineID
-		pipe.Metadata.Name = source.Name + " Pipeline"
-		pipe.Spec.Source.ID = source.ID
-		pipe.Spec.Source.Config = sourceConfig(source)
-		if source.Parser == "regex" {
-			pattern := source.RegexPattern
-			if pattern == "" {
-				pattern = `(?P<message>.*)`
-			}
-			pipe.Spec.Stages = []pipeline.StageSpec{{ID: "parse-regex", Type: "parser", Plugin: "regex-parser", Version: "1.0.0", Config: map[string]any{"pattern": pattern}, OnError: &pipeline.ErrorPolicy{Action: "dead_letter"}}}
-		}
-		pipe.Spec.Stages = appendParsingConfigStages(pipe.Spec.Stages, source)
-		pipe.Spec.Outputs = []pipeline.OutputSpec{{ID: "set-index", Plugin: "memory-output", Version: "1.0.0", Config: map[string]any{"index": source.DefaultIndex}}}
-		return pipe
+		return pipeline.SyslogCollectionPipeline()
 	}
-}
-
-func appendParsingConfigStages(stages []pipeline.StageSpec, source DataSource) []pipeline.StageSpec {
-	out := append([]pipeline.StageSpec(nil), stages...)
-	if len(source.FieldMapping) > 0 {
-		out = append(out, fieldMappingStage(source.FieldMapping))
-	}
-	if len(source.TypeMapping) > 0 {
-		out = append(out, pipeline.StageSpec{ID: "normalize-types", Type: "transform", Plugin: "type-convert", Version: "1.0.0", Config: map[string]any{"fields": stringMapAny(source.TypeMapping)}})
-	}
-	return out
-}
-
-func fieldMappingStage(mapping map[string]string) pipeline.StageSpec {
-	return pipeline.StageSpec{ID: "map-fields", Type: "transform", Plugin: "field-mapping", Version: "1.0.0", Config: map[string]any{"mapping": stringMapAny(mapping)}}
-}
-
-func stringMapAny(values map[string]string) map[string]any {
-	out := map[string]any{}
-	for key, value := range values {
-		out[key] = value
-	}
-	return out
 }
 
 func sourceConfig(source DataSource) map[string]any {
@@ -908,7 +814,7 @@ func sourceConfig(source DataSource) map[string]any {
 		case "syslog":
 			config["raw_source"] = "syslog"
 		default:
-			config["raw_source"] = "http"
+			config["raw_source"] = "syslog"
 		}
 	}
 	if source.Path != "" {
@@ -1551,7 +1457,7 @@ func (h *Handler) retryDeadletter(w http.ResponseWriter, r *http.Request) {
 	}
 	copyEvent := *target
 	copyEvent.Errors = nil
-	result, err := h.runtime.Execute(r.Context(), h.pipelineForSource("http-json"), &copyEvent)
+	result, err := h.runtime.Execute(r.Context(), h.pipelineForSource("syslog-default"), &copyEvent)
 	if err != nil {
 		deadletterStore.Append(result.Event)
 		writeJSON(w, http.StatusAccepted, IngestResponse{Status: result.Status, Event: result.Event})

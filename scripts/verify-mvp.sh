@@ -7,10 +7,12 @@ cd "$ROOT"
 ADDR=${XDP_API_ADDR:-127.0.0.1:18080}
 BASE=${BASE:-http://$ADDR}
 GOCACHE=${GOCACHE:-"$ROOT/.cache/go-build"}
+GOMODCACHE=${GOMODCACHE:-"$ROOT/.cache/go-mod"}
+GOPATH=${GOPATH:-"$ROOT/.cache/go-path"}
 LOG=${XDP_API_LOG:-/tmp/xdp-api-verify.log}
 BIN=${XDP_API_BIN:-"$ROOT/build/verify/xdp-api"}
 
-mkdir -p "$GOCACHE"
+mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH"
 mkdir -p "$(dirname "$BIN")"
 rm -f "$LOG"
 
@@ -21,11 +23,11 @@ if curl -fsS "$BASE/healthz" >/dev/null 2>&1; then
 fi
 
 printf '== test ==\n'
-GOCACHE="$GOCACHE" go test ./...
+GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" GOPATH="$GOPATH" go test ./...
 
 printf '\n== build ==\n'
-GOCACHE="$GOCACHE" go build ./cmd/...
-GOCACHE="$GOCACHE" go build -o "$BIN" ./cmd/xdp-api
+GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" GOPATH="$GOPATH" go build ./cmd/...
+GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" GOPATH="$GOPATH" go build -o "$BIN" ./cmd/xdp-api
 
 printf '\n== start api ==\n'
 XDP_MYSQL_DISABLED=true XDP_API_ADDR="$ADDR" "$BIN" >"$LOG" 2>&1 &

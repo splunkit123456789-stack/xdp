@@ -24,7 +24,10 @@ type ParserPlugin struct {
 	Category            string         `json:"category"`
 	Description         string         `json:"description,omitempty"`
 	Version             string         `json:"version"`
+	Runtime             string         `json:"runtime,omitempty"`
+	Phase               string         `json:"phase,omitempty"`
 	ConfigSchema        map[string]any `json:"config_schema,omitempty"`
+	SchemaSummary       map[string]any `json:"schema_summary,omitempty"`
 	ValidationRules     map[string]any `json:"validation_rules,omitempty"`
 	PropsTemplate       string         `json:"props_template,omitempty"`
 	RuntimeCapabilities map[string]any `json:"runtime_capabilities"`
@@ -321,6 +324,9 @@ func (h *Handler) normalizeParseRule(rule ParseRule, pathID string, requireName 
 	if rule.PluginConfig == nil {
 		rule.PluginConfig = map[string]any{}
 	}
+	if rule.ParserPlugin == "regex" {
+		rule.PluginConfig = normalizeRegexPluginConfig(rule.PluginConfig)
+	}
 	hotFields, err := ch.NormalizeHotFields(rule.HotFields)
 	if err != nil {
 		return ParseRule{}, validationError("hot_fields is invalid")
@@ -389,12 +395,25 @@ func validateParseRule(rule ParseRule) error {
 		if strings.TrimSpace(rule.SampleEvent) == "" {
 			return fmt.Errorf("sample_event is required")
 		}
+		if stringConfig(rule.PluginConfig, "source_field", "raw") != "raw" {
+			return fmt.Errorf("plugin_config.source_field must be raw")
+		}
+		if stringConfig(rule.PluginConfig, "target", "fields") != "fields" {
+			return fmt.Errorf("plugin_config.target must be fields")
+		}
+		if stringConfig(rule.PluginConfig, "on_no_match", "continue") != "continue" {
+			return fmt.Errorf("plugin_config.on_no_match must be continue")
+		}
 		pattern := stringConfig(rule.PluginConfig, "regex_pattern", "")
 		if strings.TrimSpace(pattern) == "" {
 			return fmt.Errorf("plugin_config.regex_pattern is required")
 		}
-		if _, err := regexp.Compile(goRegexPattern(pattern)); err != nil {
+		re, err := regexp.Compile(goRegexPattern(pattern))
+		if err != nil {
 			return fmt.Errorf("plugin_config.regex_pattern is invalid")
+		}
+		if !regexHasNamedCapture(re) {
+			return fmt.Errorf("plugin_config.regex_pattern must include named capture groups")
 		}
 	case "kv":
 		if strings.TrimSpace(stringConfig(rule.PluginConfig, "field_delimiter", "")) == "" {
@@ -463,7 +482,7 @@ func previewParseRule(rule ParseRule) ([]PreviewField, error) {
 				name = names[i]
 			}
 			if name == "" {
-				name = fmt.Sprintf("group_%d", i)
+				continue
 			}
 			fields = append(fields, PreviewField{Field: name, Value: match[i], Type: previewValueType(match[i])})
 		}
@@ -583,6 +602,29 @@ func internalHotFieldSearchable(fieldType string) bool {
 	return fieldType == "string" || fieldType == "low_cardinality_string" || fieldType == "bool"
 }
 
+func normalizeRegexPluginConfig(config map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range config {
+		out[key] = value
+	}
+	out["source_field"] = stringConfig(out, "source_field", "raw")
+	out["target"] = stringConfig(out, "target", "fields")
+	out["on_no_match"] = stringConfig(out, "on_no_match", "continue")
+	if _, ok := out["field_types"]; !ok {
+		out["field_types"] = map[string]any{}
+	}
+	return out
+}
+
+func regexHasNamedCapture(re *regexp.Regexp) bool {
+	for i, name := range re.SubexpNames() {
+		if i > 0 && strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) findParseRule(id string) (ParseRule, bool) {
 	id = strings.TrimSpace(id)
 	if h.mysql != nil {
@@ -658,27 +700,44 @@ func filterParseRules(items []ParseRule, values url.Values) []ParseRule {
 
 func parserPluginCatalog(counts map[string]int) []ParserPlugin {
 	return []ParserPlugin{
-		parserPlugin("json", "JSON 解析插件", "structured", "解析 JSON 日志并默认展开全部层级。", counts["json"], map[string]any{"flatten": true}),
-		parserPlugin("kv", "KV 解析插件", "text", "按字段分隔符和 K-V 分隔符抽取 key/value 字段。", counts["kv"], map[string]any{"field_delimiter": " ", "kv_delimiter": "=", "field_quote": "\""}),
-		parserPlugin("delimited", "分隔符解析插件", "text", "按分隔符和字段名列表解析 CSV 或分隔符日志。", counts["delimited"], map[string]any{"field_delimiter": ",", "field_names": []string{}, "field_quote": "\""}),
-		parserPlugin("regex", "正则解析插件", "text", "通过手动正则表达式和命名捕获抽取字段。", counts["regex"], map[string]any{"regex_pattern": ""}),
+		regexParserPlugin(counts["regex"]),
 	}
 }
 
-func parserPlugin(code string, name string, category string, description string, count int, schema map[string]any) ParserPlugin {
+func regexParserPlugin(count int) ParserPlugin {
 	return ParserPlugin{
-		PluginCode:      code,
-		PluginType:      "parser",
-		DisplayName:     name,
-		Category:        category,
-		Description:     description,
-		Version:         "1.0.0",
-		ConfigSchema:    schema,
-		ValidationRules: map[string]any{},
+		PluginCode:  "regex",
+		PluginType:  "parser",
+		DisplayName: "正则解析插件",
+		Category:    "text",
+		Description: "P0 内置解析插件，通过手动正则表达式和命名捕获抽取字段。",
+		Version:     "1.0.0",
+		Runtime:     "go_builtin",
+		Phase:       "P0",
+		ConfigSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"regex_pattern"},
+			"properties": map[string]any{
+				"source_field":  map[string]any{"type": "string", "default": "raw", "enum": []string{"raw"}},
+				"regex_pattern": map[string]any{"type": "string"},
+				"target":        map[string]any{"type": "string", "default": "fields", "enum": []string{"fields"}},
+				"field_types":   map[string]any{"type": "object"},
+				"on_no_match":   map[string]any{"type": "string", "default": "continue", "enum": []string{"continue"}},
+			},
+		},
+		SchemaSummary: map[string]any{
+			"required": []string{"sample_event", "regex_pattern", "props_conf"},
+			"defaults": map[string]any{"source_field": "raw", "target": "fields", "on_no_match": "continue"},
+		},
+		ValidationRules: map[string]any{"named_capture_required": true},
+		PropsTemplate:   "[source::<rule_name>]\nEXTRACT-custom = <regex_pattern>",
 		RuntimeCapabilities: map[string]any{
 			"preview":             true,
 			"props_conf_generate": true,
 			"runtime_publish":     true,
+			"runtime_ingest":      true,
+			"ingest_parse":        true,
+			"hot_reload":          true,
 		},
 		Status:          "active",
 		Builtin:         true,
@@ -686,8 +745,35 @@ func parserPlugin(code string, name string, category string, description string,
 	}
 }
 
+func p1ParserPlugin(code string, name string, category string, description string, count int, schema map[string]any) ParserPlugin {
+	return ParserPlugin{
+		PluginCode:      code,
+		PluginType:      "parser",
+		DisplayName:     name,
+		Category:        category,
+		Description:     description,
+		Version:         "1.0.0",
+		Runtime:         "go_builtin",
+		Phase:           "P1",
+		ConfigSchema:    schema,
+		SchemaSummary:   map[string]any{"phase": "P1", "enabled": false},
+		ValidationRules: map[string]any{},
+		RuntimeCapabilities: map[string]any{
+			"preview":             false,
+			"props_conf_generate": false,
+			"runtime_publish":     false,
+			"runtime_ingest":      false,
+			"ingest_parse":        false,
+			"hot_reload":          false,
+		},
+		Status:          "disabled",
+		Builtin:         true,
+		ConfiguredCount: count,
+	}
+}
+
 func supportedParserPlugins() map[string]struct{} {
-	return map[string]struct{}{"json": {}, "kv": {}, "delimited": {}, "regex": {}}
+	return map[string]struct{}{"regex": {}}
 }
 
 func parserPluginStoreItems() []mysqlstore.ParserPlugin {
@@ -1015,22 +1101,30 @@ func parseRuleStage(rule ParseRule) pipeline.StageSpec {
 	for _, field := range rule.HotFields {
 		hotFields = append(hotFields, map[string]any{"name": field.Name, "type": field.Type, "searchable": field.Searchable, "aggregatable": field.Aggregatable, "aliases": field.Aliases})
 	}
+	pluginCode := "props-conf-parser"
+	config := map[string]any{
+		"parser_plugin":    rule.ParserPlugin,
+		"props_conf":       rule.PropsConf,
+		"input_route":      rule.InputRoute,
+		"output_index":     rule.OutputIndex,
+		"data_source_name": rule.DataSourceName,
+		"sourcetype":       rule.Name,
+		"rule_id":          rule.ID,
+		"plugin_config":    rule.PluginConfig,
+		"hot_fields":       hotFields,
+	}
+	if rule.ParserPlugin == "regex" {
+		pluginCode = "regex"
+		for key, value := range rule.PluginConfig {
+			config[key] = value
+		}
+	}
 	return pipeline.StageSpec{
 		ID:      "parse-rule-" + rule.Code,
 		Type:    "parser",
-		Plugin:  "props-conf-parser",
+		Plugin:  pluginCode,
 		Version: rule.ParserPluginVersion,
-		Config: map[string]any{
-			"parser_plugin":    rule.ParserPlugin,
-			"props_conf":       rule.PropsConf,
-			"input_route":      rule.InputRoute,
-			"output_index":     rule.OutputIndex,
-			"data_source_name": rule.DataSourceName,
-			"sourcetype":       rule.Name,
-			"rule_id":          rule.ID,
-			"plugin_config":    rule.PluginConfig,
-			"hot_fields":       hotFields,
-		},
+		Config:  config,
 		OnError: &pipeline.ErrorPolicy{Action: "continue"},
 	}
 }

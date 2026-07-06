@@ -40,7 +40,7 @@ func main() {
 		go router.reloadLoop(ctx, configAPI, configToken, reloadInterval)
 		go listeners.reconcileLoop(ctx, router, reloadInterval)
 	} else {
-		runInput(ctx, reg, plugin.TypeInput, "syslog-input", "1.0.0", map[string]any{
+		runInput(ctx, reg, plugin.TypeInput, "syslog", "1.0.0", map[string]any{
 			"addr":     env("XDP_SYSLOG_ADDR", ":5514"),
 			"protocol": "udp",
 			"name":     "xdp-agent-syslog",
@@ -263,7 +263,7 @@ func (m *syslogListenerManager) reconcile(ctx context.Context, desired map[strin
 }
 
 func (m *syslogListenerManager) run(ctx context.Context, spec syslogSpec) {
-	factory, _, err := m.reg.Get(plugin.TypeInput, "syslog-input", "1.0.0")
+	factory, _, err := m.reg.Get(plugin.TypeInput, "syslog", "1.0.0")
 	if err != nil {
 		slog.Warn("syslog listener plugin unavailable", "datasource", spec.ID, "error", err)
 		return
@@ -273,7 +273,7 @@ func (m *syslogListenerManager) run(ctx context.Context, spec syslogSpec) {
 		slog.Warn("syslog listener factory returned non-input", "datasource", spec.ID)
 		return
 	}
-	if err := input.Init(plugin.BasicInitContext{Ctx: ctx, Code: "syslog-input", Version: "1.0.0"}, map[string]any{
+	if err := input.Init(plugin.BasicInitContext{Ctx: ctx, Code: "syslog", Version: "1.0.0"}, map[string]any{
 		"addr":     spec.Addr,
 		"protocol": spec.Protocol,
 		"name":     spec.Name,

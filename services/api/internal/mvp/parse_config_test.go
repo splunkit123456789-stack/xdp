@@ -20,6 +20,7 @@ import (
 	geoip "xdp/plugins/enrichment/geoip"
 	memoryoutput "xdp/plugins/output/memory"
 	propsconfparser "xdp/plugins/parser/propsconf"
+	regexparser "xdp/plugins/parser/regex"
 	typeconvert "xdp/plugins/transform/typeconvert"
 )
 
@@ -29,6 +30,7 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	t.Setenv("XDP_OUTPUT", "")
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	dataSource := createTestSyslogDataSource(t, handler, "Firewall Syslog")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/parser-plugins", nil)
 	rec := httptest.NewRecorder()
@@ -41,6 +43,10 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 			PluginCode          string         `json:"plugin_code"`
 			PluginType          string         `json:"plugin_type"`
 			DisplayName         string         `json:"display_name"`
+			Runtime             string         `json:"runtime"`
+			Status              string         `json:"status"`
+			Phase               string         `json:"phase"`
+			SchemaSummary       map[string]any `json:"schema_summary"`
 			ConfiguredCount     int            `json:"configured_count"`
 			RuntimeCapabilities map[string]any `json:"runtime_capabilities"`
 		} `json:"plugins"`
@@ -48,9 +54,29 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&plugins); err != nil {
 		t.Fatalf("decode plugins: %v", err)
 	}
-	for _, code := range []string{"json", "kv", "delimited", "regex"} {
-		if !hasParserPlugin(plugins.Plugins, code) {
-			t.Fatalf("parser plugins = %#v, missing %s", plugins.Plugins, code)
+	if len(plugins.Plugins) != 1 {
+		t.Fatalf("parser plugins = %#v, want regex only", plugins.Plugins)
+	}
+	regexPlugin := parserPluginByCode(plugins.Plugins, "regex")
+	if regexPlugin == nil {
+		t.Fatalf("regex parser plugin missing: %#v", plugins.Plugins)
+	}
+	if regexPlugin.Runtime != "go_builtin" || regexPlugin.Status != "active" {
+		t.Fatalf("regex plugin runtime/status = %#v, want go_builtin active", regexPlugin)
+	}
+	if !stringSliceContains(anyStringSlice(regexPlugin.SchemaSummary["required"]), "sample_event") ||
+		!stringSliceContains(anyStringSlice(regexPlugin.SchemaSummary["required"]), "regex_pattern") ||
+		!stringSliceContains(anyStringSlice(regexPlugin.SchemaSummary["required"]), "props_conf") {
+		t.Fatalf("regex plugin schema_summary = %#v, want required sample_event regex_pattern props_conf", regexPlugin.SchemaSummary)
+	}
+	for _, capability := range []string{"preview", "ingest_parse", "hot_reload", "props_conf_generate"} {
+		if regexPlugin.RuntimeCapabilities[capability] != true {
+			t.Fatalf("regex plugin capability %s = %#v, want true", capability, regexPlugin.RuntimeCapabilities[capability])
+		}
+	}
+	for _, code := range []string{"json", "kv", "delimited"} {
+		if parserPluginByCode(plugins.Plugins, code) != nil {
+			t.Fatalf("%s parser plugin should not be exposed before plugin integration: %#v", code, plugins.Plugins)
 		}
 	}
 
@@ -75,6 +101,9 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	}
 	if len(created.HotFields) != 2 || created.HotFields[0].Name != "src_ip" || !created.HotFields[0].Searchable || created.HotFields[1].Type != "uint64" {
 		t.Fatalf("created rule hot_fields = %#v", created.HotFields)
+	}
+	if created.PluginConfig["source_field"] != "raw" || created.PluginConfig["target"] != "fields" || created.PluginConfig["on_no_match"] != "continue" {
+		t.Fatalf("created regex plugin_config = %#v, want standard defaults", created.PluginConfig)
 	}
 	var createdRaw map[string]any
 	if err := json.Unmarshal(createdBody, &createdRaw); err != nil {
@@ -102,10 +131,10 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&runtime); err != nil {
 		t.Fatalf("decode runtime pipelines: %v", err)
 	}
-	if !hasParseRuleStage(runtime.Pipelines, created.Code, "props-conf-parser") {
+	if !hasParseRuleStage(runtime.Pipelines, created.Code, "regex") {
 		t.Fatalf("runtime pipelines missing parse rule stage for %s: %#v", created.Code, runtime.Pipelines)
 	}
-	if !pipelineSourceConfigEquals(runtime.Pipelines, "firewall-syslog-pipeline", "source_name", "Firewall Syslog") {
+	if !pipelineSourceConfigEquals(runtime.Pipelines, dataSource.PipelineID, "source_name", "Firewall Syslog") {
 		t.Fatalf("runtime pipelines missing source_name from datasource name: %#v", runtime.Pipelines)
 	}
 	if !parseRuleStageConfigEquals(runtime.Pipelines, created.Code, "sourcetype", "Firewall Regex") {
@@ -114,7 +143,7 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	if !parseRuleStageHasHotField(runtime.Pipelines, created.Code, "src_ip") {
 		t.Fatalf("runtime pipelines missing hot_fields for %s: %#v", created.Code, runtime.Pipelines)
 	}
-	if got := pipelineOutputIndex(runtime.Pipelines, "firewall-syslog-pipeline"); got != "${metadata.index}" {
+	if got := pipelineOutputIndex(runtime.Pipelines, dataSource.PipelineID); got != "${metadata.index}" {
 		t.Fatalf("runtime pipeline output index = %q, want ${metadata.index}", got)
 	}
 
@@ -188,7 +217,7 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&runtime); err != nil {
 		t.Fatalf("decode runtime pipelines after disable: %v", err)
 	}
-	if hasParseRuleStage(runtime.Pipelines, created.Code, "props-conf-parser") {
+	if hasParseRuleStage(runtime.Pipelines, created.Code, "regex") {
 		t.Fatalf("disabled parse rule stage still present: %#v", runtime.Pipelines)
 	}
 
@@ -249,19 +278,19 @@ func TestParseConfigAPIValidatesRequests(t *testing.T) {
 		},
 		{
 			name:       "time field is rejected",
-			body:       `{"name":"Bad Time Field","status":"active","parser_plugin":"json","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"audit","time_field":"@timestamp","plugin_config":{},"props_conf":"[sourcetype::json]\nINDEXED_EXTRACTIONS = json"}`,
+			body:       `{"name":"Bad Time Field","status":"active","parser_plugin":"regex","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"audit","time_field":"@timestamp","sample_event":"src=1.1.1.1","plugin_config":{"regex_pattern":"src=(?<src_ip>\\S+)"},"props_conf":"[source::bad-time]\nEXTRACT-bad-time = src=(?<src_ip>\\S+)"}`,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "VALIDATION_ERROR",
 		},
 		{
 			name:       "invalid output index is rejected",
-			body:       `{"name":"Bad Index","status":"active","parser_plugin":"json","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"Events-Firewall","plugin_config":{},"props_conf":"[sourcetype::json]\nINDEXED_EXTRACTIONS = json"}`,
+			body:       `{"name":"Bad Index","status":"active","parser_plugin":"regex","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"Events-Firewall","sample_event":"src=1.1.1.1","plugin_config":{"regex_pattern":"src=(?<src_ip>\\S+)"},"props_conf":"[source::bad-index]\nEXTRACT-bad-index = src=(?<src_ip>\\S+)"}`,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "VALIDATION_ERROR",
 		},
 		{
 			name:       "system output index is rejected",
-			body:       `{"name":"System Index","status":"active","parser_plugin":"json","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"_unparsed","sample_event":"{\"msg\":\"hello\"}","plugin_config":{},"props_conf":"[sourcetype::json]\nINDEXED_EXTRACTIONS = json"}`,
+			body:       `{"name":"System Index","status":"active","parser_plugin":"regex","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"_unparsed","sample_event":"src=1.1.1.1","plugin_config":{"regex_pattern":"src=(?<src_ip>\\S+)"},"props_conf":"[source::system-index]\nEXTRACT-system-index = src=(?<src_ip>\\S+)"}`,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "VALIDATION_ERROR",
 		},
@@ -272,10 +301,10 @@ func TestParseConfigAPIValidatesRequests(t *testing.T) {
 			wantCode:   "PARSER_PLUGIN_NOT_SUPPORTED",
 		},
 		{
-			name:       "delimited requires fields",
+			name:       "delimited parser is not supported before plugin integration",
 			body:       `{"name":"CSV","status":"active","parser_plugin":"delimited","data_source_name":"Firewall Syslog","input_route":"internal_raw_topic","output_index":"audit","plugin_config":{"field_delimiter":",","field_names":[]},"props_conf":"[sourcetype::csv]\nINDEXED_EXTRACTIONS = csv"}`,
-			wantStatus: http.StatusBadRequest,
-			wantCode:   "VALIDATION_ERROR",
+			wantStatus: http.StatusUnprocessableEntity,
+			wantCode:   "PARSER_PLUGIN_NOT_SUPPORTED",
 		},
 	}
 	for _, tc := range cases {
@@ -344,6 +373,7 @@ func TestParseConfigAPIDerivesInternalHotFieldsFromPreviewWhenMissing(t *testing
 	t.Setenv("XDP_OUTPUT", "")
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	createTestSyslogDataSource(t, handler, "Firewall Syslog")
 
 	body := `{"name":"Firewall Regex","status":"active","parser_plugin":"regex","data_source_name":"Firewall Syslog","input_route":"raw.ds_firewall_syslog","output_index":"audit","sample_event":"src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048","plugin_config":{"regex_pattern":"src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"},"props_conf":"[source::firewall]\nEXTRACT-firewall = src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/parse-rules", strings.NewReader(body))
@@ -380,6 +410,7 @@ func TestRuntimePipelineGroupsParseRulesBySourcePriority(t *testing.T) {
 	t.Setenv("XDP_OUTPUT", "")
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dataSource := createTestSyslogDataSource(t, handler, "Firewall Syslog")
 
 	ruleBodies := []string{
 		`{"name":"Traffic Regex","status":"active","parser_plugin":"regex","data_source_name":"Firewall Syslog","input_route":"raw.ds_firewall_syslog","output_index":"audit_alt","priority":20,"sample_event":"traffic src=10.0.1.8 dst=172.16.0.4 bytes=2048","plugin_config":{"regex_pattern":"^traffic\\s+src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+bytes=(?<bytes>\\d+)"},"props_conf":"[source::traffic]\nEXTRACT-traffic = ^traffic\\s+src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+bytes=(?<bytes>\\d+)"}`,
@@ -407,7 +438,7 @@ func TestRuntimePipelineGroupsParseRulesBySourcePriority(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&runtime); err != nil {
 		t.Fatalf("decode runtime pipelines: %v", err)
 	}
-	group := parseRuleGroupStage(runtime.Pipelines, "firewall-syslog-pipeline")
+	group := parseRuleGroupStage(runtime.Pipelines, dataSource.PipelineID)
 	if group == nil {
 		t.Fatalf("runtime pipeline missing parse rule group: %#v", runtime.Pipelines)
 	}
@@ -426,7 +457,7 @@ func TestRuntimePipelineGroupsParseRulesBySourcePriority(t *testing.T) {
 	if group.Stages[1].Config["sourcetype"] != "Traffic Regex" || group.Stages[1].Config["output_index"] != "audit_alt" {
 		t.Fatalf("second grouped rule = %#v, want Traffic Regex priority 20", group.Stages[1])
 	}
-	if got := pipelineOutputIndex(runtime.Pipelines, "firewall-syslog-pipeline"); got != "${metadata.index}" {
+	if got := pipelineOutputIndex(runtime.Pipelines, dataSource.PipelineID); got != "${metadata.index}" {
 		t.Fatalf("runtime pipeline output index = %q, want ${metadata.index}", got)
 	}
 }
@@ -437,6 +468,7 @@ func TestRuntimePipelineParsesSecondRuleWhenFirstRuleMisses(t *testing.T) {
 	t.Setenv("XDP_OUTPUT", "")
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dataSource := createTestSyslogDataSource(t, handler, "Firewall Syslog")
 
 	for _, body := range []string{
 		`{"name":"Deny Regex","status":"active","parser_plugin":"regex","data_source_name":"Firewall Syslog","input_route":"raw.ds_firewall_syslog","output_index":"audit_p0","priority":10,"sample_event":"deny src=10.0.1.8 action=deny","plugin_config":{"regex_pattern":"^deny\\s+src=(?<src_ip>\\S+)\\s+action=(?<action>\\S+)"},"props_conf":"[source::deny]\nEXTRACT-deny = ^deny\\s+src=(?<src_ip>\\S+)\\s+action=(?<action>\\S+)"}`,
@@ -463,12 +495,13 @@ func TestRuntimePipelineParsesSecondRuleWhenFirstRuleMisses(t *testing.T) {
 	if err := json.NewDecoder(runtimeRec.Body).Decode(&runtime); err != nil {
 		t.Fatalf("decode runtime pipelines: %v", err)
 	}
-	pipe := runtimePipelineByID(runtime.Pipelines, "firewall-syslog-pipeline")
+	pipe := runtimePipelineByID(runtime.Pipelines, dataSource.PipelineID)
 	if pipe == nil {
-		t.Fatal("missing firewall-syslog-pipeline")
+		t.Fatalf("missing syslog collection pipeline %s", dataSource.PipelineID)
 	}
 	reg := plugin.NewRegistry()
 	mustRegisterPlugin(t, propsconfparser.Register(reg))
+	mustRegisterPlugin(t, regexparser.Register(reg))
 	mustRegisterPlugin(t, typeconvert.Register(reg))
 	mustRegisterPlugin(t, geoip.Register(reg))
 	mustRegisterPlugin(t, memoryoutput.Register(reg))
@@ -486,7 +519,7 @@ func TestRuntimePipelineParsesSecondRuleWhenFirstRuleMisses(t *testing.T) {
 	if result.Event.Metadata["index"] != "audit_alt" {
 		t.Fatalf("metadata.index = %#v, want audit_alt", result.Event.Metadata["index"])
 	}
-	if result.Event.Fields["src_ip"] != "10.0.1.8" || result.Event.Fields["bytes"] != 2048 {
+	if result.Event.Fields["src_ip"] != "10.0.1.8" || result.Event.Fields["bytes"] != "2048" {
 		t.Fatalf("fields = %#v, want traffic fields", result.Event.Fields)
 	}
 	if len(result.Event.Errors) != 0 {
@@ -516,6 +549,64 @@ func runtimePipelineByID(items []pipeline.Pipeline, pipelineID string) *pipeline
 		}
 	}
 	return nil
+}
+
+func createTestSyslogDataSource(t *testing.T, handler http.Handler, name string) DataSource {
+	t.Helper()
+	port := freeUDPPort(t)
+	body := fmt.Sprintf(`{"name":%q,"plugin_code":"syslog","status":"active","plugin_config":{"collector_port":%d,"transport_protocol":"UDP","encoding":"UTF-8","log_filter_enabled":false}}`, name, port)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create test syslog datasource status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var source DataSource
+	if err := json.NewDecoder(rec.Body).Decode(&source); err != nil {
+		t.Fatalf("decode test syslog datasource: %v", err)
+	}
+	if source.PipelineID == "" {
+		t.Fatalf("test syslog datasource missing pipeline_id: %#v", source)
+	}
+	return source
+}
+
+func parserPluginByCode[T any](plugins []T, code string) *T {
+	for i := range plugins {
+		data, _ := json.Marshal(plugins[i])
+		var raw struct {
+			PluginCode string `json:"plugin_code"`
+		}
+		if err := json.Unmarshal(data, &raw); err == nil && raw.PluginCode == code {
+			return &plugins[i]
+		}
+	}
+	return nil
+}
+
+func anyStringSlice(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, fmt.Sprint(item))
+		}
+		return out
+	default:
+		return []string{}
+	}
+}
+
+func stringSliceContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRuleGroupStage(items []pipeline.Pipeline, pipelineID string) *pipeline.StageSpec {
@@ -560,25 +651,16 @@ func parseRuleStageHasHotField(pipes []pipeline.Pipeline, code string, field str
 	return false
 }
 
-func hasParserPlugin[T interface {
-	~struct {
-		PluginCode          string         `json:"plugin_code"`
-		PluginType          string         `json:"plugin_type"`
-		DisplayName         string         `json:"display_name"`
-		ConfiguredCount     int            `json:"configured_count"`
-		RuntimeCapabilities map[string]any `json:"runtime_capabilities"`
-	}
-}](items []T, code string) bool {
+func hasParserPlugin[T any](items []T, code string) bool {
 	for _, item := range items {
 		raw, _ := json.Marshal(item)
 		var parsed struct {
-			PluginCode          string         `json:"plugin_code"`
-			PluginType          string         `json:"plugin_type"`
-			DisplayName         string         `json:"display_name"`
-			RuntimeCapabilities map[string]any `json:"runtime_capabilities"`
+			PluginCode  string `json:"plugin_code"`
+			PluginType  string `json:"plugin_type"`
+			DisplayName string `json:"display_name"`
 		}
 		_ = json.Unmarshal(raw, &parsed)
-		if parsed.PluginCode == code && parsed.PluginType == "parser" && parsed.DisplayName != "" && parsed.RuntimeCapabilities["preview"] == true {
+		if parsed.PluginCode == code && parsed.PluginType == "parser" && parsed.DisplayName != "" {
 			return true
 		}
 	}

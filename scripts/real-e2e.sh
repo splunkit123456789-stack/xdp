@@ -2,7 +2,10 @@
 set -euo pipefail
 COMPOSE=${COMPOSE:-deployments/docker-compose/docker-compose.yaml}
 BASE=${BASE:-http://127.0.0.1:8080}
-AGENT=${AGENT:-http://127.0.0.1:8081}
+AGENT_ADDR=${AGENT_ADDR:-127.0.0.1:18081}
+AGENT=${AGENT:-http://$AGENT_ADDR}
+AUDIT_SYSLOG_PORT=${AUDIT_SYSLOG_PORT:-15514}
+HOT_SYSLOG_PORT=${HOT_SYSLOG_PORT:-15515}
 CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://127.0.0.1:8123}
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_CACHE_DIR="${GOCACHE:-$ROOT_DIR/.cache/go-build}"
@@ -20,6 +23,18 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+stop_stale_host_agent() {
+    local agent_port pids pid
+    agent_port="${AGENT_ADDR##*:}"
+    pids="$(lsof -tiTCP:"$agent_port" -sTCP:LISTEN 2>/dev/null || true) $(lsof -tiUDP:"$AUDIT_SYSLOG_PORT" 2>/dev/null || true) $(lsof -tiUDP:"$HOT_SYSLOG_PORT" 2>/dev/null || true)"
+    for pid in $pids; do
+        if ps -p "$pid" -o command= 2>/dev/null | grep -q 'xdp-agent'; then
+            kill "$pid" >/dev/null 2>&1 || true
+        fi
+    done
+    sleep 1
+}
 
 printf '== build linux binaries ==\n'
 mkdir -p build/docker-bin build/host-bin "$GO_CACHE_DIR" "$GO_MOD_CACHE_DIR" "$GO_PATH_DIR"
@@ -44,9 +59,12 @@ for i in $(seq 1 60); do
     fi
     sleep 1
 done
-for topic in xdp.raw.http xdp.raw.syslog xdp.output.default; do
+for topic in xdp.raw.syslog xdp.output.default; do
     docker compose -f "$COMPOSE" exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic "$topic" --partitions 1 --replication-factor 1 >/dev/null
 done
+
+printf '== reset test data ==\n'
+COMPOSE_FILE="$COMPOSE" CLICKHOUSE_USER=xdp CLICKHOUSE_PASSWORD=xdp CLICKHOUSE_URL="$CLICKHOUSE_URL" bash scripts/reset-test-env.sh
 
 docker compose -f "$COMPOSE" up -d --build xdp-api xdp-worker xdp-writer
 
@@ -67,8 +85,9 @@ PY
 
 printf '== start host agent ==\n'
 mkdir -p "$(dirname "$HOST_AGENT_LOG")"
+stop_stale_host_agent
 env \
-  XDP_AGENT_ADDR=127.0.0.1:8081 \
+  XDP_AGENT_ADDR="$AGENT_ADDR" \
   XDP_KAFKA_BROKERS=127.0.0.1:9092 \
   XDP_CONFIG_API="$BASE" \
   XDP_CONFIG_RELOAD_INTERVAL=2s \
@@ -76,11 +95,12 @@ env \
 HOST_AGENT_PID="$!"
 
 printf '== wait host agent ==\n'
-python3 - <<'PY'
-import time, urllib.request
+AGENT="$AGENT" python3 - <<'PY'
+import os, time, urllib.request
+url=os.environ["AGENT"].rstrip("/") + "/healthz"
 for _ in range(90):
     try:
-        with urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=2) as r:
+        with urllib.request.urlopen(url, timeout=2) as r:
             if r.status == 200:
                 print('host agent ready')
                 break
@@ -98,49 +118,14 @@ python3 - <<'PY'
 import urllib.request, json, time
 for _ in range(30):
     plugins=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/v1/plugins'))
-    if len(plugins) >= 9:
-        print('mysql/plugin api ok', len(plugins))
+    items = plugins.get('plugins', plugins if isinstance(plugins, list) else [])
+    codes = {item.get('plugin_code') or item.get('code') for item in items}
+    if {'syslog', 'regex', 'stats'} <= codes and not ({'http-input', 'json-parser'} & codes):
+        print('mysql/plugin api ok', sorted(codes))
         break
     time.sleep(1)
 else:
     raise SystemExit('plugins not seeded')
-PY
-
-printf '== send http json through agent -> kafka -> worker -> writer -> clickhouse ==\n'
-E2E_HTTP_TS=$(python3 - <<'PY'
-from datetime import datetime, timezone
-print(datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'))
-PY
-)
-curl -fsS -X POST "$AGENT/ingest" -H 'Content-Type: application/json' -d "{\"time_field\":\"@timestamp\",\"raw\":\"{\\\"@timestamp\\\":\\\"$E2E_HTTP_TS\\\",\\\"level\\\":\\\"info\\\",\\\"msg\\\":\\\"ok\\\",\\\"service\\\":\\\"e2e-http\\\",\\\"bytes\\\":2048}\"}" | python3 -m json.tool
-
-printf '== send udp syslog through agent -> kafka -> worker(regex/geoip/router) -> writer -> clickhouse ==\n'
-python3 - <<'PY'
-import socket
-msg=b'src=1.1.1.1 dst=8.8.8.8 action=deny bytes=4096'
-s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.sendto(msg, ('127.0.0.1', 5514))
-s.close()
-print('syslog sent')
-PY
-
-printf '== wait clickhouse rows ==\n'
-python3 - <<'PY'
-import time, urllib.request, urllib.parse, base64
-url='http://127.0.0.1:8123/'
-def q(sql):
-    req=urllib.request.Request(url, data=sql.encode(), method='POST')
-    req.add_header('Authorization', 'Basic ' + base64.b64encode(b'xdp:xdp').decode())
-    return urllib.request.urlopen(req, timeout=5).read().decode().strip()
-for _ in range(60):
-    http_count=q("SELECT count() FROM xdp.events_app WHERE event_time >= now() - INTERVAL 10 MINUTE AND event_time <= now() + INTERVAL 10 MINUTE AND position(raw, 'e2e-http') > 0")
-    fw_count=q("SELECT count() FROM xdp.events_firewall WHERE position(raw, 'action=deny') > 0")
-    if int(http_count or 0) >= 1 and int(fw_count or 0) >= 1:
-        print('clickhouse e2e ok', 'http=', http_count, 'firewall=', fw_count)
-        break
-    time.sleep(1)
-else:
-    raise SystemExit('clickhouse rows not found')
 PY
 
 printf '== verify product api on clickhouse ==\n'
@@ -149,7 +134,8 @@ python3 - <<'PY'
 import json
 body=json.load(open('/tmp/xdp_e2e_indexes.json'))
 indexes={item.get('index_name') for item in body.get('indexes', [])}
-assert {'app','firewall'} <= indexes, body
+assert 'app' not in indexes, body
+assert 'firewall' not in indexes, body
 print('indexes api ok', sorted(indexes))
 PY
 curl -fsS -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"audit_e2e","name":"Audit E2E","ttl_days":7,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_index_save.json
@@ -162,36 +148,35 @@ assert 'audit_e2e' in indexes, body
 print('index save api ok', sorted(indexes))
 PY
 curl -fsS -X DELETE "$BASE/api/v1/indexes?index=audit_e2e&drop_storage=true" | python3 -m json.tool >/tmp/xdp_e2e_index_delete.json
-curl -fsS "$BASE/api/v1/search/fields?q=index%3Dapp&limit=100" | python3 -m json.tool >/tmp/xdp_e2e_fields.json
-python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_fields.json'))
-fields={item.get('name') for item in body.get('fields', [])}
-assert 'service' in fields, body
-print('fields api ok', sorted(fields))
-PY
-curl -fsS "$BASE/api/v1/search/timeline?q=index%3Dapp&interval=hour" | python3 -m json.tool >/tmp/xdp_e2e_timeline.json
-python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_timeline.json'))
-assert body.get('buckets'), body
-print('timeline api ok', body['buckets'])
-PY
 
 printf '== verify productized syslog parser -> index -> hot fields -> spl stats ==\n'
 curl -fsS -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"audit_p0","ttl_days":30,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_audit_index.json
+cat >/tmp/xdp_e2e_syslog_datasource_payload.json <<JSON
+{
+  "id":"e2e-syslog-source",
+  "name":"E2E Syslog Source",
+  "plugin_code":"syslog",
+  "status":"active",
+  "plugin_config":{
+    "collector_port":${AUDIT_SYSLOG_PORT},
+    "transport_protocol":"UDP",
+    "encoding":"UTF-8",
+    "log_filter_enabled":false
+  }
+}
+JSON
+curl -fsS -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @/tmp/xdp_e2e_syslog_datasource_payload.json | python3 -m json.tool >/tmp/xdp_e2e_syslog_datasource.json
 curl -fsS -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' -d '{
   "id":"pr_e2e_audit_regex",
   "name":"E2E Audit Regex",
   "status":"active",
   "parser_plugin":"regex",
-  "data_source_name":"Firewall Syslog",
-  "input_route":"xdp.raw.syslog",
+  "data_source_name":"E2E Syslog Source",
+  "input_route":"raw.ds_e2e_syslog_source",
   "output_index":"audit_p0",
-  "sourcetype":"syslog",
   "sample_event":"src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048",
   "plugin_config":{"regex_pattern":"src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"},
-  "props_conf":"[source::Firewall Syslog]\nEXTRACT-audit = src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"
+  "props_conf":"[source::E2E Syslog Source]\nEXTRACT-audit = src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"
 }' | python3 -m json.tool >/tmp/xdp_e2e_parse_rule.json
 python3 - <<'PY'
 import json
@@ -207,15 +192,18 @@ python3 - <<'PY'
 import json, urllib.request
 body=json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/v1/runtime/pipelines'))
 for pipe in body.get('pipelines', []):
-    if pipe.get('metadata', {}).get('id') == 'firewall-syslog-pipeline':
+    if pipe.get('metadata', {}).get('id') == 'pipe_e2e_syslog_source':
         stages=[stage.get('plugin') for stage in pipe.get('spec', {}).get('stages', [])]
+        child_plugins=[]
+        for stage in pipe.get('spec', {}).get('stages', []):
+            child_plugins.extend(child.get('plugin') for child in stage.get('stages', []))
         outputs=pipe.get('spec', {}).get('outputs', [])
-        assert 'props-conf-parser' in stages, pipe
-        assert outputs and outputs[0].get('config', {}).get('index') == 'audit_p0', pipe
-        print('runtime parser pipeline ok', stages)
+        assert 'regex' in child_plugins, pipe
+        assert outputs and outputs[0].get('config', {}).get('index') == '${metadata.index}', pipe
+        print('runtime parser pipeline ok', stages, child_plugins)
         break
 else:
-    raise SystemExit('firewall runtime pipeline not found')
+    raise SystemExit('syslog runtime pipeline not found')
 PY
 python3 - <<'PY'
 import base64, json, urllib.request
@@ -230,11 +218,11 @@ assert columns['bytes'].get('default_type') == 'MATERIALIZED', columns['bytes']
 print('clickhouse hot fields ok', sorted(name for name in columns if name in {'src_ip','dst_ip','action','bytes'}))
 PY
 sleep 4
-python3 - <<'PY'
-import socket
+AUDIT_SYSLOG_PORT="$AUDIT_SYSLOG_PORT" python3 - <<'PY'
+import os, socket
 msg=b'src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048'
 s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.sendto(msg, ('127.0.0.1', 5514))
+s.sendto(msg, ('127.0.0.1', int(os.environ["AUDIT_SYSLOG_PORT"])))
 s.close()
 print('audit syslog sent')
 PY
@@ -271,6 +259,22 @@ assert event.get('metadata', {}).get('index') == 'audit_p0', event
 assert event.get('fields', {}).get('src_ip') == '10.0.1.8', event
 print('spl field search ok', event['fields']['src_ip'])
 PY
+curl -fsS "$BASE/api/v1/search/fields?q=index%3Daudit_p0&limit=100" | python3 -m json.tool >/tmp/xdp_e2e_fields.json
+python3 - <<'PY'
+import json
+body=json.load(open('/tmp/xdp_e2e_fields.json'))
+fields={item.get('name') for item in body.get('fields', [])}
+assert {'src_ip','dst_ip','action','bytes'} <= fields, body
+print('fields api ok', sorted(fields))
+PY
+curl -fsS --get "$BASE/api/v1/search/timeline" --data-urlencode 'q=index=audit_p0' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'interval=minute' | python3 -m json.tool >/tmp/xdp_e2e_timeline.json
+python3 - <<'PY'
+import json
+body=json.load(open('/tmp/xdp_e2e_timeline.json'))
+assert body.get('buckets'), body
+assert sum(int(item.get('count') or 0) for item in body['buckets']) >= 1, body
+print('timeline api ok', body['interval'], len(body['buckets']))
+PY
 curl -fsS --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | stats count as total sum(bytes) as total_bytes avg(bytes) as avg_bytes by src action' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_audit_stats.json
 python3 - <<'PY'
 import json
@@ -288,16 +292,37 @@ print('spl stats ok', row)
 PY
 
 printf '== verify datasource persistence and worker hot reload ==\n'
-curl -fsS -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d '{"id":"http-json","type":"http","name":"HTTP JSON","status":"active","addr":":8081","path":"/ingest","default_index":"hotreload","time_field":"@timestamp","parser":"json","pipeline_id":"mvp-json-pipeline"}' | python3 -m json.tool >/tmp/xdp_e2e_datasource_save.json
+curl -fsS -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"hotreload","ttl_days":30,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_hotreload_index.json
+cat >/tmp/xdp_e2e_hot_datasource_payload.json <<JSON
+{
+  "id":"e2e-hot-syslog-source",
+  "name":"E2E Hot Syslog Source",
+  "plugin_code":"syslog",
+  "status":"active",
+  "plugin_config":{
+    "collector_port":${HOT_SYSLOG_PORT},
+    "transport_protocol":"UDP",
+    "encoding":"UTF-8",
+    "log_filter_enabled":false
+  }
+}
+JSON
+curl -fsS -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @/tmp/xdp_e2e_hot_datasource_payload.json | python3 -m json.tool >/tmp/xdp_e2e_datasource_save.json
+curl -fsS -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' -d '{
+  "id":"pr_e2e_hot_regex",
+  "name":"E2E Hot Regex",
+  "status":"active",
+  "parser_plugin":"regex",
+  "data_source_name":"E2E Hot Syslog Source",
+  "input_route":"raw.ds_e2e_hot_syslog_source",
+  "output_index":"hotreload",
+  "sample_event":"service=e2e-hot bytes=64",
+  "plugin_config":{"regex_pattern":"service=(?<service>\\S+)\\s+bytes=(?<bytes>\\d+)"},
+  "props_conf":"[source::E2E Hot Syslog Source]\nEXTRACT-hot = service=(?<service>\\S+)\\s+bytes=(?<bytes>\\d+)"
+}' | python3 -m json.tool >/tmp/xdp_e2e_hot_parse_rule.json
 sleep 4
-HOT_TS=$(python3 - <<'PY'
-from datetime import datetime, timezone
-print(datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'))
-PY
-)
-curl -fsS -X POST "$AGENT/ingest" -H 'Content-Type: application/json' -d "{\"time_field\":\"@timestamp\",\"raw\":\"{\\\"@timestamp\\\":\\\"$HOT_TS\\\",\\\"level\\\":\\\"info\\\",\\\"msg\\\":\\\"hot reload\\\",\\\"service\\\":\\\"e2e-hot\\\",\\\"bytes\\\":64}\"}" | python3 -m json.tool
-python3 - <<'PY'
-import time, urllib.request, urllib.error, base64
+HOT_SYSLOG_PORT="$HOT_SYSLOG_PORT" python3 - <<'PY'
+import base64, os, socket, time, urllib.error, urllib.request
 url='http://127.0.0.1:8123/'
 def q(sql):
     req=urllib.request.Request(url, data=sql.encode(), method='POST')
@@ -306,7 +331,15 @@ def q(sql):
         return urllib.request.urlopen(req, timeout=5).read().decode().strip()
     except urllib.error.HTTPError:
         return '0'
+def send_hot():
+    msg=b'service=e2e-hot bytes=64'
+    s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.sendto(msg, ('127.0.0.1', int(os.environ["HOT_SYSLOG_PORT"])))
+    finally:
+        s.close()
 for _ in range(60):
+    send_hot()
     count=q("SELECT count() FROM xdp.events_hotreload WHERE position(raw, 'e2e-hot') > 0")
     if int(count or 0) >= 1:
         print('hot reload ok', count)

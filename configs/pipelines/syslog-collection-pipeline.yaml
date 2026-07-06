@@ -1,0 +1,18 @@
+api_version: xdp.io/v1alpha1
+kind: Pipeline
+metadata:
+  id: syslog-collection-pipeline
+  name: Syslog Collection Pipeline
+spec:
+  source:
+    id: syslog-source
+    type: input
+    plugin: syslog
+    version: 1.0.0
+  stages: []
+  outputs:
+    - id: memory-search
+      plugin: memory-output
+      version: 1.0.0
+      config:
+        index: "${metadata.index}"

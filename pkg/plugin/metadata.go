@@ -11,6 +11,7 @@ type Metadata struct {
 	Runtime          string            `json:"runtime"`
 	Labels           map[string]string `json:"labels,omitempty"`
 	ConfigSchema     Schema            `json:"config_schema"`
+	UISchema         Schema            `json:"ui_schema,omitempty"`
 	InputSchema      Schema            `json:"input_schema,omitempty"`
 	OutputSchema     Schema            `json:"output_schema,omitempty"`
 	PermissionSchema Schema            `json:"permission_schema,omitempty"`

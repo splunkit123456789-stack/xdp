@@ -24,16 +24,15 @@ import (
 	ch "xdp/pkg/storage/clickhouse"
 	mysqlstore "xdp/pkg/storage/mysql"
 	geoip "xdp/plugins/enrichment/geoip"
-	httpinput "xdp/plugins/input/http"
 	sysloginput "xdp/plugins/input/syslog"
 	clickhouseoutput "xdp/plugins/output/clickhouse"
 	kafkaoutput "xdp/plugins/output/kafka"
 	memoryoutput "xdp/plugins/output/memory"
 	s3output "xdp/plugins/output/s3"
-	jsonparser "xdp/plugins/parser/json"
 	propsconfparser "xdp/plugins/parser/propsconf"
 	regexparser "xdp/plugins/parser/regex"
 	indexrouter "xdp/plugins/router/indexrouter"
+	statssearch "xdp/plugins/search/stats"
 	fieldmapping "xdp/plugins/transform/fieldmapping"
 	typeconvert "xdp/plugins/transform/typeconvert"
 )
@@ -57,6 +56,7 @@ type Handler struct {
 	indexConfigs     map[string]IndexSummary
 	parseRules       map[string]ParseRule
 	savedSearches    map[string]mysqlstore.SavedSearch
+	importedPlugins  map[string]PluginImportResponse
 	runtimePipelines []pipeline.Pipeline
 }
 
@@ -64,9 +64,7 @@ var requestSeq atomic.Uint64
 
 func NewHandler(logger *slog.Logger) http.Handler {
 	reg := plugin.NewRegistry()
-	must(httpinput.Register(reg))
 	must(sysloginput.Register(reg))
-	must(jsonparser.Register(reg))
 	must(propsconfparser.Register(reg))
 	must(regexparser.Register(reg))
 	must(fieldmapping.Register(reg))
@@ -77,8 +75,9 @@ func NewHandler(logger *slog.Logger) http.Handler {
 	must(memoryoutput.Register(reg))
 	must(clickhouseoutput.Register(reg))
 	must(s3output.Register(reg))
+	must(statssearch.Register(reg))
 
-	pipe := pipeline.MVPJSONPipeline()
+	pipe := pipeline.SyslogCollectionPipeline()
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
 		pipe.Spec.Outputs = []pipeline.OutputSpec{{ID: "write-clickhouse", Plugin: "clickhouse-output", Version: "1.0.0", Config: map[string]any{"endpoint": env("XDP_CLICKHOUSE_ENDPOINT", "http://127.0.0.1:8123"), "database": env("XDP_CLICKHOUSE_DATABASE", "xdp"), "username": env("XDP_CLICKHOUSE_USERNAME", ""), "password": env("XDP_CLICKHOUSE_PASSWORD", ""), "index": "app"}}}
 	}
@@ -123,19 +122,20 @@ func NewHandler(logger *slog.Logger) http.Handler {
 	}
 
 	h := &Handler{
-		logger:        logger,
-		mux:           http.NewServeMux(),
-		reg:           reg,
-		runtime:       xdpruntime.NewExecutor(reg),
-		pipeline:      pipe,
-		clickhouse:    ch.New(ch.Config{Endpoint: env("XDP_CLICKHOUSE_ENDPOINT", "http://127.0.0.1:8123"), Database: env("XDP_CLICKHOUSE_DATABASE", "xdp"), Username: env("XDP_CLICKHOUSE_USERNAME", ""), Password: env("XDP_CLICKHOUSE_PASSWORD", "")}),
-		mysql:         mysqlClient,
-		metrics:       &Metrics{},
-		auth:          auth,
-		dataSources:   defaultDataSources(),
-		indexConfigs:  defaultIndexConfigs(),
-		parseRules:    defaultParseRules(),
-		savedSearches: defaultSavedSearches(),
+		logger:          logger,
+		mux:             http.NewServeMux(),
+		reg:             reg,
+		runtime:         xdpruntime.NewExecutor(reg),
+		pipeline:        pipe,
+		clickhouse:      ch.New(ch.Config{Endpoint: env("XDP_CLICKHOUSE_ENDPOINT", "http://127.0.0.1:8123"), Database: env("XDP_CLICKHOUSE_DATABASE", "xdp"), Username: env("XDP_CLICKHOUSE_USERNAME", ""), Password: env("XDP_CLICKHOUSE_PASSWORD", "")}),
+		mysql:           mysqlClient,
+		metrics:         &Metrics{},
+		auth:            auth,
+		dataSources:     defaultDataSources(),
+		indexConfigs:    defaultIndexConfigs(),
+		parseRules:      defaultParseRules(),
+		savedSearches:   defaultSavedSearches(),
+		importedPlugins: map[string]PluginImportResponse{},
 	}
 	h.runtimePipelines = h.buildRuntimePipelines()
 	if h.mysql != nil {
@@ -163,6 +163,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /api/v1/auth", h.authStatus)
 	h.mux.HandleFunc("POST /api/v1/login", h.login)
 	h.mux.HandleFunc("GET /api/v1/plugins", h.listPlugins)
+	h.mux.HandleFunc("POST /api/v1/plugins/import", h.importPlugin)
 	h.mux.HandleFunc("GET /api/v1/input-plugins", h.listInputPlugins)
 	h.mux.HandleFunc("GET /api/v1/parser-plugins", h.listParserPlugins)
 	h.mux.HandleFunc("GET /api/v1/pipelines", h.listPipelines)
@@ -186,7 +187,6 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("PATCH /api/v1/parse-rules/{id}/status", h.updateParseRuleStatus)
 	h.mux.HandleFunc("DELETE /api/v1/parse-rules/{id}", h.deleteParseRule)
 	h.mux.HandleFunc("POST /api/v1/parse-rules/{id}/test", h.testParseRule)
-	h.mux.HandleFunc("POST /api/v1/ingest/json", h.ingestJSON)
 	h.mux.HandleFunc("GET /api/v1/search", h.search)
 	h.mux.HandleFunc("GET /api/v1/search/fields", h.searchFields)
 	h.mux.HandleFunc("GET /api/v1/search/timeline", h.searchTimeline)
@@ -202,13 +202,58 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listPlugins(w http.ResponseWriter, r *http.Request) {
+	filterType := normalizePluginType(r.URL.Query().Get("type"))
 	if h.mysql != nil {
-		if items, err := h.mysql.ListPlugins(r.Context()); err == nil {
-			writeJSON(w, http.StatusOK, items)
+		if items, err := h.mysql.ListPluginRecords(r.Context()); err == nil {
+			plugins := pluginResponsesFromRecords(items, filterType)
+			writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, h.reg.List(""))
+	plugins := pluginResponsesFromMetadata(h.reg.List(""), filterType)
+	h.mu.RLock()
+	for _, item := range h.importedPlugins {
+		if filterType == "" || item.PluginType == filterType {
+			plugins = append(plugins, item)
+		}
+	}
+	h.mu.RUnlock()
+	sort.SliceStable(plugins, func(i, j int) bool {
+		if plugins[i].PluginType == plugins[j].PluginType {
+			return plugins[i].PluginCode < plugins[j].PluginCode
+		}
+		return plugins[i].PluginType < plugins[j].PluginType
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
+}
+
+func (h *Handler) importPlugin(w http.ResponseWriter, r *http.Request) {
+	data, err := readPluginPackage(r)
+	if err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "INVALID_PLUGIN_PACKAGE", err.Error())
+		return
+	}
+	manifest, err := parsePluginManifest(data)
+	if err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "INVALID_PLUGIN_MANIFEST", err.Error())
+		return
+	}
+	requestedType := normalizePluginType(r.URL.Query().Get("plugin_type"))
+	if requestedType == "" {
+		requestedType = normalizePluginType(r.FormValue("plugin_type"))
+	}
+	if requestedType != "" && requestedType != normalizePluginType(manifest.PluginType) {
+		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_MISMATCH", "request plugin_type does not match manifest")
+		return
+	}
+	item := manifest.toImportResponse(pluginChecksum(data))
+	if h.mysql != nil {
+		_ = h.mysql.UpsertPluginRecord(r.Context(), item.toStoreRecord())
+	}
+	h.mu.Lock()
+	h.importedPlugins[item.key()] = item
+	h.mu.Unlock()
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (h *Handler) listPipelines(w http.ResponseWriter, r *http.Request) {
@@ -258,63 +303,6 @@ func (h *Handler) savePipeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, pipe)
 }
 
-func (h *Handler) ingestJSON(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	var req IngestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json request")
-		return
-	}
-	if strings.TrimSpace(req.Raw) == "" {
-		writeError(w, http.StatusBadRequest, "raw is required")
-		return
-	}
-	now := time.Now().UTC()
-	eventTime := now
-	source := h.dataSource("http-json")
-	explicitTimeField := req.TimeFieldName() != ""
-	timeField := req.TimeFieldName()
-	if timeField == "" {
-		timeField = source.TimeField
-	}
-	if timeField != "" {
-		parsed, err := eventtime.FromRaw(req.Raw, timeField)
-		if err != nil {
-			if explicitTimeField {
-				writeError(w, http.StatusBadRequest, "invalid time_field")
-				return
-			}
-			timeField = ""
-		} else {
-			eventTime = parsed
-		}
-	}
-	e := event.New(req.Raw, event.Source{Type: "http", Name: "mvp-json"}, now)
-	e.EventTime = eventTime
-	e.Metadata["index"] = source.DefaultIndex
-	if timeField != "" {
-		e.Metadata["time_field"] = timeField
-	}
-
-	start := time.Now()
-	pipe := h.pipelineForSource("http-json")
-	result, err := h.runtime.Execute(r.Context(), pipe, e)
-	h.metrics.PluginDurationNanos.Add(time.Since(start).Nanoseconds())
-	h.metrics.IngestEvents.Add(1)
-	if err != nil {
-		h.metrics.PluginErrors.Add(1)
-		h.metrics.DeadletterEvents.Add(1)
-		deadletterStore.Append(result.Event)
-		if h.mysql != nil {
-			_ = h.mysql.SaveDeadletter(r.Context(), result.Event)
-		}
-		writeJSON(w, http.StatusAccepted, IngestResponse{Event: result.Event, Status: result.Status})
-		return
-	}
-	h.metrics.OutputEvents.Add(1)
-	writeJSON(w, http.StatusCreated, IngestResponse{Event: result.Event, Status: "indexed"})
-}
-
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	limit := ch.ParseLimit(r.URL.Query().Get("limit"), 20)
@@ -329,7 +317,7 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(query.Q) != "" {
 		parsed, err := splquery.Parse(query.Q)
 		if err != nil {
-			writeErrorCode(w, http.StatusBadRequest, "SPL_PARSE_ERROR", "invalid search query")
+			writeErrorCode(w, http.StatusBadRequest, searchParseErrorCode(query.Q, err), err.Error())
 			return
 		}
 		query.ApplyFilters(parsed.Filters)
@@ -361,30 +349,112 @@ func (h *Handler) searchStats(w http.ResponseWriter, r *http.Request, query Sear
 	fetchQuery := query
 	fetchQuery.Limit = 1000
 	fetchQuery.Offset = 0
+	input := plugin.SearchInput{
+		Index:     fetchQuery.Index,
+		Keyword:   fetchQuery.Keyword,
+		Field:     fetchQuery.Field,
+		Value:     fetchQuery.Value,
+		StartTime: fetchQuery.StartTime,
+		EndTime:   fetchQuery.EndTime,
+		Limit:     fetchQuery.Limit,
+		Offset:    fetchQuery.Offset,
+		HotFields: searchPluginHotFields(h.hotFieldsForIndex(fetchQuery.Index)),
+	}
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
-		result, err := h.clickhouse.Stats(r.Context(), ch.StatsQuery{Index: fetchQuery.Index, Keyword: fetchQuery.Keyword, Field: fetchQuery.Field, Value: fetchQuery.Value, StartTime: fetchQuery.StartTime, EndTime: fetchQuery.EndTime, Limit: fetchQuery.Limit, Offset: fetchQuery.Offset, Stats: stats, HotFields: h.hotFieldsForIndex(fetchQuery.Index)})
-		if err != nil {
-			h.logger.Warn("clickhouse stats failed", "error", err)
-			writeError(w, http.StatusBadGateway, "stats query failed")
-			return
-		}
-		rows, pagination := paginateStatsRows(result.Rows, query)
-		result.Rows = rows
-		result.Limit = pagination.Limit
-		writeJSON(w, http.StatusOK, newSearchResponse(query, "stats", started, func(response *SearchResponse) {
-			response.Stats = &result
-			response.Pagination = &pagination
-		}))
+		input.Backend = clickHouseStatsBackend{client: h.clickhouse}
+	} else {
+		input.Backend = memoryStatsBackend{store: memoryoutput.DefaultStore()}
+	}
+	result, err := h.executeStatsSearchPlugin(r.Context(), input, stats)
+	if err != nil {
+		h.logger.Warn("stats search plugin failed", "error", err)
+		writeError(w, http.StatusBadGateway, "stats search plugin failed")
 		return
 	}
-	result := memoryoutput.DefaultStore().Stats(memoryoutput.StatsQuery{Index: fetchQuery.Index, Keyword: fetchQuery.Keyword, Field: fetchQuery.Field, Value: fetchQuery.Value, StartTime: fetchQuery.StartTime, EndTime: fetchQuery.EndTime, Limit: fetchQuery.Limit, Offset: fetchQuery.Offset, Stats: stats})
 	rows, pagination := paginateStatsRows(result.Rows, query)
 	result.Rows = rows
 	result.Limit = pagination.Limit
 	writeJSON(w, http.StatusOK, newSearchResponse(query, "stats", started, func(response *SearchResponse) {
+		response.SearchCommand = h.statsSearchCommandMetadata()
 		response.Stats = &result
 		response.Pagination = &pagination
 	}))
+}
+
+func (h *Handler) executeStatsSearchPlugin(ctx context.Context, input plugin.SearchInput, stats splstats.Query) (splstats.Result, error) {
+	factory, _, err := h.reg.Get(plugin.TypeSearch, "stats", "1.0.0")
+	if err != nil {
+		return splstats.Result{}, err
+	}
+	searchPlugin, ok := factory().(plugin.SearchPlugin)
+	if !ok {
+		return splstats.Result{}, fmt.Errorf("plugin stats is not a search plugin")
+	}
+	if err := searchPlugin.Init(plugin.BasicInitContext{Ctx: ctx, Code: "stats", Version: "1.0.0"}, map[string]any{}); err != nil {
+		return splstats.Result{}, err
+	}
+	defer searchPlugin.Close()
+	return searchPlugin.Execute(ctx, input, stats)
+}
+
+type clickHouseStatsBackend struct {
+	client *ch.Client
+}
+
+func (b clickHouseStatsBackend) Stats(ctx context.Context, query plugin.SearchStatsQuery) (splstats.Result, error) {
+	if b.client == nil {
+		return splstats.Result{}, fmt.Errorf("clickhouse client is required")
+	}
+	return b.client.Stats(ctx, ch.StatsQuery{
+		Index:     query.Index,
+		Keyword:   query.Keyword,
+		Field:     query.Field,
+		Value:     query.Value,
+		StartTime: query.StartTime,
+		EndTime:   query.EndTime,
+		Limit:     query.Limit,
+		Offset:    query.Offset,
+		Stats:     query.Stats,
+		HotFields: clickHouseHotFields(query.HotFields),
+	})
+}
+
+type memoryStatsBackend struct {
+	store *memoryoutput.Store
+}
+
+func (b memoryStatsBackend) Stats(ctx context.Context, query plugin.SearchStatsQuery) (splstats.Result, error) {
+	store := b.store
+	if store == nil {
+		store = memoryoutput.DefaultStore()
+	}
+	return store.Stats(memoryoutput.StatsQuery{
+		Index:     query.Index,
+		Keyword:   query.Keyword,
+		Field:     query.Field,
+		Value:     query.Value,
+		StartTime: query.StartTime,
+		EndTime:   query.EndTime,
+		Limit:     query.Limit,
+		Offset:    query.Offset,
+		Stats:     query.Stats,
+	}), nil
+}
+
+func searchPluginHotFields(fields []ch.HotField) []plugin.SearchHotField {
+	out := make([]plugin.SearchHotField, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, plugin.SearchHotField{Name: field.Name, Type: field.Type, Searchable: field.Searchable, Aggregatable: field.Aggregatable, Aliases: field.Aliases})
+	}
+	return out
+}
+
+func clickHouseHotFields(fields []plugin.SearchHotField) []ch.HotField {
+	out := make([]ch.HotField, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, ch.HotField{Name: field.Name, Type: field.Type, Searchable: field.Searchable, Aggregatable: field.Aggregatable, Aliases: field.Aliases})
+	}
+	return out
 }
 
 func (h *Handler) deadletters(w http.ResponseWriter, r *http.Request) {
@@ -410,19 +480,6 @@ func (h *Handler) prometheus(w http.ResponseWriter, r *http.Request) {
 }
 
 var deadletterStore = memoryoutput.NewStore()
-
-type IngestRequest struct {
-	Raw            string `json:"raw"`
-	TimeField      string `json:"time_field,omitempty"`
-	EventTimeField string `json:"event_time_field,omitempty"`
-}
-
-func (r IngestRequest) TimeFieldName() string {
-	if strings.TrimSpace(r.TimeField) != "" {
-		return strings.TrimSpace(r.TimeField)
-	}
-	return strings.TrimSpace(r.EventTimeField)
-}
 
 type IngestResponse struct {
 	Status string       `json:"status"`
@@ -478,15 +535,45 @@ func firstNonEmpty(values ...string) string {
 }
 
 type SearchResponse struct {
-	Mode        string             `json:"mode,omitempty"`
-	SPL         string             `json:"spl,omitempty"`
-	Index       string             `json:"index,omitempty"`
-	TimeRange   *SearchTimeRange   `json:"time_range,omitempty"`
-	ElapsedMS   int64              `json:"elapsed_ms,omitempty"`
-	Events      []SearchEvent      `json:"events,omitempty"`
-	Stats       *splstats.Result   `json:"stats,omitempty"`
-	Pagination  *Pagination        `json:"pagination,omitempty"`
-	Deadletters []DeadletterRecord `json:"deadletters,omitempty"`
+	Mode          string             `json:"mode,omitempty"`
+	SPL           string             `json:"spl,omitempty"`
+	Index         string             `json:"index,omitempty"`
+	TimeRange     *SearchTimeRange   `json:"time_range,omitempty"`
+	ElapsedMS     int64              `json:"elapsed_ms,omitempty"`
+	SearchCommand *SearchCommandMeta `json:"search_command,omitempty"`
+	Events        []SearchEvent      `json:"events,omitempty"`
+	Stats         *splstats.Result   `json:"stats,omitempty"`
+	Pagination    *Pagination        `json:"pagination,omitempty"`
+	Deadletters   []DeadletterRecord `json:"deadletters,omitempty"`
+}
+
+type SearchCommandMeta struct {
+	PluginCode    string `json:"plugin_code"`
+	PluginType    string `json:"plugin_type"`
+	PluginVersion string `json:"plugin_version"`
+	Runtime       string `json:"runtime"`
+	OutputMode    string `json:"output_mode"`
+}
+
+func (h *Handler) statsSearchCommandMetadata() *SearchCommandMeta {
+	if h != nil && h.reg != nil {
+		if _, meta, err := h.reg.Get(plugin.TypeSearch, "stats", "1.0.0"); err == nil {
+			return &SearchCommandMeta{
+				PluginCode:    meta.Code,
+				PluginType:    string(meta.Type),
+				PluginVersion: meta.Version,
+				Runtime:       meta.Runtime,
+				OutputMode:    firstNonEmpty(meta.Labels["output_mode"], "stats"),
+			}
+		}
+	}
+	return &SearchCommandMeta{
+		PluginCode:    "stats",
+		PluginType:    "search",
+		PluginVersion: "1.0.0",
+		Runtime:       "go_builtin",
+		OutputMode:    "stats",
+	}
 }
 
 type SearchEvent struct {
@@ -688,6 +775,34 @@ func effectiveSearchSPL(query SearchQuery) string {
 	return strings.Join(parts, " ")
 }
 
+func searchParseErrorCode(input string, err error) string {
+	if err == nil || !searchLooksLikeStatsCommand(input) {
+		return "SPL_PARSE_ERROR"
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "unsupported stats function"):
+		return "SPL_STATS_UNSUPPORTED_FUNCTION"
+	case strings.Contains(message, "requires a field"):
+		return "SPL_STATS_FIELD_REQUIRED"
+	case strings.Contains(message, "invalid alias"):
+		return "SPL_STATS_ALIAS_INVALID"
+	case strings.Contains(message, "too many group by fields"):
+		return "SPL_STATS_GROUP_LIMIT_EXCEEDED"
+	default:
+		return "SPL_STATS_PARSE_ERROR"
+	}
+}
+
+func searchLooksLikeStatsCommand(input string) bool {
+	raw := strings.TrimSpace(strings.ToLower(input))
+	if strings.HasPrefix(raw, "stats ") || strings.HasPrefix(raw, "| stats ") {
+		return true
+	}
+	_, command, ok := strings.Cut(raw, "|")
+	return ok && strings.HasPrefix(strings.TrimSpace(command), "stats ")
+}
+
 func searchTimeRange(query SearchQuery) *SearchTimeRange {
 	if query.StartTime.IsZero() && query.EndTime.IsZero() {
 		return nil
@@ -796,16 +911,7 @@ func mustLoadSearchLocation(name string) *time.Location {
 }
 
 func defaultPipeline() pipeline.Pipeline {
-	return pipeline.Pipeline{
-		APIVersion: pipeline.APIVersionV1Alpha1,
-		Kind:       pipeline.KindPipeline,
-		Metadata:   pipeline.Metadata{ID: "mvp-json-pipeline", Name: "MVP JSON Pipeline"},
-		Spec: pipeline.Spec{
-			Source:  pipeline.SourceSpec{ID: "http-json", Type: "input", Plugin: "http-input", Version: "1.0.0"},
-			Stages:  []pipeline.StageSpec{{ID: "parse-json", Type: string(plugin.TypeParser), Plugin: "json-parser", Version: "1.0.0", Config: map[string]any{"source": "raw", "target": "fields"}, OnError: &pipeline.ErrorPolicy{Action: "dead_letter"}}},
-			Outputs: []pipeline.OutputSpec{{ID: "memory-search", Plugin: "memory-output", Version: "1.0.0", Config: map[string]any{"index": "app"}}},
-		},
-	}
+	return pipeline.SyslogCollectionPipeline()
 }
 
 func must(err error) {

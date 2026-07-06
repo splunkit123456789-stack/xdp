@@ -39,7 +39,7 @@ func (p *Parser) Metadata() plugin.Metadata {
 		ConfigSchema: plugin.Schema{
 			"type": "object",
 			"properties": map[string]any{
-				"parser_plugin": map[string]any{"type": "string", "enum": []string{"json", "regex", "kv", "delimited"}},
+				"parser_plugin": map[string]any{"type": "string", "enum": []string{"json", "kv", "delimited"}},
 				"plugin_config": map[string]any{"type": "object"},
 				"props_conf":    map[string]any{"type": "string"},
 				"sourcetype":    map[string]any{"type": "string"},
@@ -82,26 +82,6 @@ func (p *Parser) Process(ctx plugin.ProcessContext, e *event.Event) (*event.Even
 		for key, value := range flattenMap(fields, "") {
 			e.Fields[key] = value
 		}
-	case "regex":
-		pattern := stringConfig(p.cfg.PluginConfig, "regex_pattern", "")
-		re, err := regexp.Compile(goRegexPattern(pattern))
-		if err != nil {
-			parseErr := plugin.NewError(plugin.ErrInvalidConfig, "invalid regex_pattern", false, err)
-			markParseFailed(e, parseErr)
-			return e, parseErr
-		}
-		matches := re.FindStringSubmatch(e.Raw)
-		if matches == nil {
-			parseErr := plugin.NewError(plugin.ErrParseFailed, "regex did not match", false, nil)
-			markParseFailed(e, parseErr)
-			return e, parseErr
-		}
-		for i, name := range re.SubexpNames() {
-			if i == 0 || name == "" {
-				continue
-			}
-			e.Fields[name] = matches[i]
-		}
 	case "kv":
 		for key, value := range parseKV(e.Raw, p.cfg.PluginConfig) {
 			e.Fields[key] = value
@@ -140,7 +120,7 @@ func parseConfig(config map[string]any) (Config, error) {
 	if cfg.ParserPlugin == "" {
 		return cfg, fmt.Errorf("parser_plugin is required")
 	}
-	if cfg.ParserPlugin != "json" && cfg.ParserPlugin != "regex" && cfg.ParserPlugin != "kv" && cfg.ParserPlugin != "delimited" {
+	if cfg.ParserPlugin != "json" && cfg.ParserPlugin != "kv" && cfg.ParserPlugin != "delimited" {
 		return cfg, fmt.Errorf("unsupported parser_plugin")
 	}
 	if raw, ok := config["plugin_config"]; ok {
@@ -154,10 +134,6 @@ func parseConfig(config map[string]any) (Config, error) {
 	cfg.Sourcetype = strings.TrimSpace(stringConfig(config, "sourcetype", ""))
 	cfg.RuleID = strings.TrimSpace(stringConfig(config, "rule_id", ""))
 	switch cfg.ParserPlugin {
-	case "regex":
-		if _, err := regexp.Compile(goRegexPattern(stringConfig(cfg.PluginConfig, "regex_pattern", ""))); err != nil {
-			return cfg, fmt.Errorf("regex_pattern is invalid")
-		}
 	case "kv":
 		if strings.TrimSpace(stringConfig(cfg.PluginConfig, "kv_delimiter", "")) == "" {
 			return cfg, fmt.Errorf("kv_delimiter is required")
@@ -319,8 +295,4 @@ func stripQuotes(value string) string {
 		}
 	}
 	return value
-}
-
-func goRegexPattern(pattern string) string {
-	return strings.ReplaceAll(pattern, "(?<", "(?P<")
 }

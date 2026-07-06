@@ -630,7 +630,6 @@ func (h *Handler) web(w http.ResponseWriter, r *http.Request) {
         <aside class="settings-nav">
           <h3>Settings</h3>
           <div class="active">Data inputs</div>
-          <div>HTTP JSON</div>
           <div>Syslog UDP</div>
           <div>Runtime pipeline</div>
         </aside>
@@ -639,28 +638,27 @@ func (h *Handler) web(w http.ResponseWriter, r *http.Request) {
             <div class="panel-head"><h2>Add Data</h2><button onclick="resetCollectionForm()">New Input</button></div>
             <div class="panel-body">
               <div class="data-input-grid">
-                <div class="input-type-card"><span>HTTP JSON</span><strong>HTTP Event Collector style</strong><div class="hint">默认 Agent :8081/ingest，适合应用日志和 API 写入。</div></div>
                 <div class="input-type-card"><span>Syslog UDP</span><strong>Network and security data</strong><div class="hint">默认 :5514/udp，适合防火墙、网络设备和安全日志。</div></div>
               </div>
               <div class="grid-3">
-                <div class="field"><label for="collID">Input ID</label><input id="collID" value="http-json"></div>
-                <div class="field"><label for="collType">Source type</label><select id="collType"><option value="http">HTTP JSON</option><option value="syslog">Syslog UDP</option></select></div>
+                <div class="field"><label for="collID">Input ID</label><input id="collID" value="syslog-default"></div>
+                <div class="field"><label for="collType">Source type</label><select id="collType"><option value="syslog">Syslog UDP</option></select></div>
                 <div class="field"><label for="collStatus">Status</label><select id="collStatus"><option value="active">active</option><option value="disabled">disabled</option></select></div>
               </div>
               <div class="grid-3">
-                <div class="field"><label for="collName">Name</label><input id="collName" value="HTTP JSON"></div>
-                <div class="field"><label for="collAddr">Listen address</label><input id="collAddr" value=":8081"></div>
-                <div class="field"><label for="collEndpoint">HTTP path / Protocol</label><input id="collEndpoint" value="/ingest"></div>
+                <div class="field"><label for="collName">Name</label><input id="collName" value="Default Syslog"></div>
+                <div class="field"><label for="collAddr">Listen address</label><input id="collAddr" value=":5514"></div>
+                <div class="field"><label for="collEndpoint">Protocol</label><input id="collEndpoint" value="UDP"></div>
               </div>
               <div class="grid-3">
                 <div class="field"><label for="collIndex">Default index</label><input id="collIndex" value="app"></div>
-                <div class="field"><label for="collTimeField">Timestamp field</label><input id="collTimeField" value="@timestamp"></div>
-                <div class="field"><label for="collParser">Parser</label><select id="collParser"><option value="json">json</option><option value="regex">regex</option></select></div>
+                <div class="field"><label for="collTimeField">Timestamp field</label><input id="collTimeField" value=""></div>
+                <div class="field"><label for="collParser">Parser</label><select id="collParser"><option value="regex">regex</option></select></div>
               </div>
               <div class="grid-2">
-                <div class="field"><label for="collPipelineID">Pipeline ID</label><input id="collPipelineID" value="mvp-json-pipeline"></div>
+                <div class="field"><label for="collPipelineID">Pipeline ID</label><input id="collPipelineID" value="syslog-collection-pipeline"></div>
               </div>
-              <div class="field"><label for="collRegex">Regex pattern</label><textarea id="collRegex" placeholder="src=(?P<src_ip>\S+) dst=(?P<dst_ip>\S+) action=(?P<action>\S+) bytes=(?P<bytes>\d+)"></textarea></div>
+              <div class="field"><label for="collRegex">Regex pattern</label><textarea id="collRegex" placeholder="src=(?<src_ip>\S+) dst=(?<dst_ip>\S+) action=(?<action>\S+) bytes=(?<bytes>\d+)"></textarea></div>
               <div class="button-row">
                 <button onclick="saveCollectionConfig()">Save</button>
                 <button class="secondary" onclick="loadDataSources()">Reload list</button>
@@ -689,8 +687,8 @@ func (h *Handler) web(w http.ResponseWriter, r *http.Request) {
             <div class="panel-body">
               <div class="field"><label for="parseSource">Data input</label><select id="parseSource" onchange="loadParseForm()"></select></div>
               <div class="grid-2">
-                <div class="field"><label for="parseParser">Parser</label><select id="parseParser"><option value="json">json</option><option value="regex">regex</option></select></div>
-                <div class="field"><label for="parseTimeField">Timestamp field</label><input id="parseTimeField" value="@timestamp"></div>
+                <div class="field"><label for="parseParser">Parser</label><select id="parseParser"><option value="regex">regex</option></select></div>
+                <div class="field"><label for="parseTimeField">Timestamp config</label><input id="parseTimeField" value="" placeholder="Use props.conf TIME_* settings"></div>
               </div>
               <div class="field"><label for="parseRegex">Regex pattern</label><textarea id="parseRegex"></textarea></div>
               <div class="grid-2">
@@ -993,14 +991,14 @@ function renderDataSources() {
 }
 function resetCollectionForm() {
   byID("collID").value = "";
-  byID("collType").value = "http";
+  byID("collType").value = "syslog";
   byID("collName").value = "";
   byID("collStatus").value = "active";
-  byID("collAddr").value = ":8081";
-  byID("collEndpoint").value = "/ingest";
+  byID("collAddr").value = ":5514";
+  byID("collEndpoint").value = "UDP";
   byID("collIndex").value = "app";
-  byID("collTimeField").value = "@timestamp";
-  byID("collParser").value = "json";
+  byID("collTimeField").value = "";
+  byID("collParser").value = "regex";
   byID("collPipelineID").value = "";
   byID("collRegex").value = "";
 }
@@ -1009,20 +1007,20 @@ function editSource(encodedID) {
   const source = state.sources.find(item => item.id === id);
   if (!source) return;
   byID("collID").value = source.id || "";
-  byID("collType").value = source.type || "http";
+  byID("collType").value = source.type || "syslog";
   byID("collName").value = source.name || "";
   byID("collStatus").value = source.status || "active";
   byID("collAddr").value = source.addr || "";
-  byID("collEndpoint").value = source.type === "syslog" ? (source.protocol || "udp") : (source.path || "/ingest");
+  byID("collEndpoint").value = source.protocol || "UDP";
   byID("collIndex").value = source.default_index || "app";
   byID("collTimeField").value = source.time_field || "";
-  byID("collParser").value = source.parser || "json";
+  byID("collParser").value = source.parser || "regex";
   byID("collPipelineID").value = source.pipeline_id || "";
   byID("collRegex").value = source.regex_pattern || "";
   showPage("collect");
 }
 function sourceFromCollectionForm() {
-  const type = byID("collType").value;
+  const type = "syslog";
   const endpoint = byID("collEndpoint").value.trim();
   return {
     id: byID("collID").value.trim(),
@@ -1030,8 +1028,8 @@ function sourceFromCollectionForm() {
     name: byID("collName").value.trim(),
     status: byID("collStatus").value,
     addr: byID("collAddr").value.trim(),
-    path: type === "http" ? endpoint : "",
-    protocol: type === "syslog" ? endpoint : "",
+    path: "",
+    protocol: endpoint,
     default_index: byID("collIndex").value.trim(),
     time_field: byID("collTimeField").value.trim(),
     parser: byID("collParser").value,
@@ -1063,7 +1061,7 @@ function loadParseForm() {
   const source = state.sources.find(item => item.id === id) || state.sources[0];
   if (!source) return;
   byID("parseSource").value = source.id;
-  byID("parseParser").value = source.parser || "json";
+  byID("parseParser").value = source.parser || "regex";
   byID("parseTimeField").value = source.time_field || "";
   byID("parseRegex").value = source.regex_pattern || "";
   byID("parseFieldMapping").value = JSON.stringify(source.field_mapping || {}, null, 2);

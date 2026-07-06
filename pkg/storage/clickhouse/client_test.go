@@ -108,7 +108,7 @@ func TestBuildStatsSQLIncludesFilters(t *testing.T) {
 		t.Fatalf("Parse() error = %v", err)
 	}
 	sql, _, err := buildStatsSQL("xdp", StatsQuery{
-		Index:     "firewall",
+		Index:     "audit",
 		Keyword:   "error",
 		Field:     "service",
 		Value:     "api",
@@ -120,7 +120,7 @@ func TestBuildStatsSQLIncludesFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildStatsSQL() error = %v", err)
 	}
-	mustContain(t, sql, "FROM xdp.events_firewall")
+	mustContain(t, sql, "FROM xdp.events_audit")
 	mustContain(t, sql, "event_time >= '2026-01-01 08:00:00.000'")
 	mustContain(t, sql, "event_time <= '2026-01-02 08:00:00.000'")
 	mustContain(t, sql, "positionCaseInsensitive(raw, 'error') > 0")

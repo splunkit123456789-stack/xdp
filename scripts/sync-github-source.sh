@@ -2,8 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET_DIR="${XDP_GITHUB_DIR:-$ROOT_DIR/github}"
+TARGET_DIR="${XDP_GITHUB_DIR:-$ROOT_DIR/xdp-github-release}"
 
+if [ "$TARGET_DIR" = "$ROOT_DIR" ] || [ "$TARGET_DIR" = "/" ]; then
+  printf 'refusing to sync into unsafe target: %s\n' "$TARGET_DIR" >&2
+  exit 1
+fi
+
+rm -rf "$TARGET_DIR"
 mkdir -p "$TARGET_DIR"
 
 rsync -a --delete \
@@ -11,12 +17,16 @@ rsync -a --delete \
   --exclude='*.md' \
   --exclude='/.git/' \
   --exclude='/.cache/' \
+  --exclude='/.agents/' \
+  --exclude='/.codex/' \
   --exclude='/.code-review-graph/' \
   --exclude='/.claude/' \
   --exclude='/.gitee/' \
   --exclude='/build/' \
   --exclude='/data/' \
+  --exclude='/docs/' \
   --exclude='/github/' \
+  --exclude='/xdp-github-release/' \
   --exclude='/xdp-source-*/' \
   --exclude='/xdp-source-*.tar.gz' \
   --exclude='/web/console/node_modules/' \

@@ -107,6 +107,33 @@ describe("XDP collection config API integration", () => {
     expect(syslogOptions).not.toContain("TCP");
   });
 
+  it("blocks Kafka runtime collection configs in P0 before saving", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus()))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[data-testid="show-input-form"]').trigger("click");
+    await wrapper.get('[data-testid="input-plugin-kafka"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="kafka-runtime-disabled"]').text()).toContain("P1");
+    await wrapper.get('input[placeholder="请输入设备名称"]').setValue("Kafka Stream P1");
+    await wrapper.get('[data-testid="collect-page"] form').trigger("submit");
+    await flushPromises();
+
+    const saveCall = global.fetch.mock.calls.find(([url, options]) => url === "/api/v1/datasources" && options?.method === "POST");
+    expect(saveCall).toBeFalsy();
+    expect(wrapper.get('[data-testid="input-form-error"]').text()).toContain("Kafka 采集插件运行时能力未启用");
+  });
+
   it("blocks incomplete Syslog required fields before checking port or saving", async () => {
     localStorage.setItem("xdp_api_token", "test-token");
     global.fetch = vi

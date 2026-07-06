@@ -26,6 +26,7 @@ type InputPlugin struct {
 	Status              string         `json:"status"`
 	Version             string         `json:"version"`
 	ConfiguredCount     int            `json:"configured_count"`
+	SchemaSummary       map[string]any `json:"schema_summary,omitempty"`
 	RuntimeCapabilities map[string]any `json:"runtime_capabilities"`
 }
 
@@ -63,6 +64,12 @@ func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 			Status:          "enabled",
 			Version:         "1.0.0",
 			ConfiguredCount: counts["syslog"],
+			SchemaSummary: map[string]any{
+				"required": []string{"collector_port", "transport_protocol", "encoding", "log_filter_enabled"},
+				"conditional_required": map[string]string{
+					"log_filter_regex": "log_filter_enabled=true",
+				},
+			},
 			RuntimeCapabilities: map[string]any{
 				"runtime_ingest": true,
 				"hot_reload":     true,
@@ -73,7 +80,7 @@ func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 			Code:            "kafka",
 			Name:            "Kafka",
 			Description:     "大规模消息流采集插件，P0 展示配置入口，运行时接入降级到 P1。",
-			Status:          "planned",
+			Status:          "disabled",
 			Version:         "1.0.0",
 			ConfiguredCount: counts["kafka"],
 			RuntimeCapabilities: map[string]any{
@@ -331,10 +338,10 @@ func (h *Handler) normalizeCollectDataSource(source DataSource, pathID string) (
 		return DataSource{}, validationError("plugin_code is required")
 	}
 	if pluginCode == "kafka" {
-		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "kafka runtime ingest is not enabled in P0"}
+		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_RUNTIME_DISABLED", message: "kafka runtime ingest is not enabled in P0"}
 	}
 	if pluginCode != "syslog" {
-		return DataSource{}, validationError("unsupported plugin_code")
+		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
 	}
 	name := strings.TrimSpace(source.Name)
 	if name == "" {
@@ -361,6 +368,7 @@ func (h *Handler) normalizeCollectDataSource(source DataSource, pathID string) (
 		Status:           status,
 		PluginCode:       pluginCode,
 		PluginVersion:    firstNonEmpty(strings.TrimSpace(source.PluginVersion), "1.0.0"),
+		PluginRuntime:    "go_builtin",
 		Source:           strings.TrimSpace(source.Source),
 		Sourcetype:       strings.TrimSpace(source.Sourcetype),
 		PluginConfig:     config,
@@ -387,10 +395,10 @@ func validateCollectDataSourcePayload(source DataSource) *collectAPIError {
 	}
 	pluginCode := strings.ToLower(strings.TrimSpace(source.PluginCode))
 	if pluginCode == "kafka" {
-		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "kafka runtime ingest is not enabled in P0"}
+		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_RUNTIME_DISABLED", message: "kafka runtime ingest is not enabled in P0"}
 	}
 	if pluginCode != "syslog" {
-		return validationError("plugin_code must be syslog in P0")
+		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
 	}
 	status := strings.ToLower(strings.TrimSpace(source.Status))
 	if status == "" {

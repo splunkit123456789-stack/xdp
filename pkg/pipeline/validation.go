@@ -18,9 +18,6 @@ func (p Pipeline) Validate() error {
 	if p.Spec.Source.Plugin == "" {
 		return fmt.Errorf("spec.source.plugin is required")
 	}
-	if len(p.Spec.Stages) == 0 {
-		return fmt.Errorf("spec.stages must not be empty")
-	}
 	if len(p.Spec.Outputs) == 0 {
 		return fmt.Errorf("spec.outputs must not be empty")
 	}

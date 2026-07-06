@@ -175,7 +175,7 @@ describe("XDP Console MVP pages", () => {
     await flushPromises();
 
     const topNavButtons = wrapper.findAll('[data-testid="main-nav"] button');
-    expect(topNavButtons.map((button) => button.text())).toEqual(["采集配置", "解析配置", "索引配置", "搜索页"]);
+    expect(topNavButtons.map((button) => button.text())).toEqual(["采集配置", "解析配置", "索引配置", "搜索页", "插件管理"]);
     expect(wrapper.find(".sidebar").exists()).toBe(false);
     expect(wrapper.find(".workspace .main-panel").exists()).toBe(true);
 
@@ -183,6 +183,79 @@ describe("XDP Console MVP pages", () => {
     expect(source).toContain(".workspace{display:block;margin-top:28px}");
     expect(source).not.toContain("<aside class=\"sidebar\">");
     expect(source).not.toContain("grid-template-columns:220px minmax(0,1fr)");
+  });
+
+  it("renders plugin management and uploads plugin packages through the unified API", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus(true)))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "active", checksum: "builtin" },
+          { plugin_code: "http-input", plugin_type: "input", plugin_version: "1.0.0", name: "HTTP Input", status: "active", checksum: "" },
+          { plugin_code: "regex", plugin_type: "parser", plugin_version: "1.0.0", name: "Regex", status: "active", checksum: "builtin" },
+          { plugin_code: "json-parser", plugin_type: "parser", plugin_version: "1.0.0", name: "JSON Parser", status: "active", checksum: "" },
+          { plugin_code: "props-conf-parser", plugin_type: "parser", plugin_version: "1.0.0", name: "Props.conf Parser", status: "active", checksum: "" },
+          { plugin_code: "clickhouse-output", plugin_type: "output", plugin_version: "1.0.0", name: "ClickHouse Output", status: "active", checksum: "" },
+          { plugin_code: "table", plugin_type: "search_command", plugin_version: "1.0.0", name: "table", status: "disabled", checksum: "sha256:table" }
+        ]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "demo-kafka",
+        plugin_type: "input",
+        plugin_version: "1.0.0",
+        name: "Demo Kafka",
+        status: "disabled",
+        checksum: "sha256:demo"
+      }, 201));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("插件管理");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("采集插件");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("解析插件");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("搜索命令插件");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).not.toContain("SPL 函数插件");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("Syslog");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).not.toContain("HTTP Input");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).not.toContain("ClickHouse Output");
+
+    await wrapper.get('[data-testid="plugin-tab-parser"]').trigger("click");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("Regex");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).not.toContain("JSON Parser");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).not.toContain("Props.conf Parser");
+
+    await wrapper.get('[data-testid="plugin-tab-search_command"]').trigger("click");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("table");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("sha256:table");
+
+    await wrapper.get('[data-testid="plugin-tab-input"]').trigger("click");
+    const file = new File(["plugin zip"], "demo-kafka.zip", { type: "application/zip" });
+    Object.defineProperty(wrapper.get('[data-testid="plugin-upload-file"]').element, "files", {
+      value: [file],
+      configurable: true
+    });
+    await wrapper.get('[data-testid="plugin-upload-file"]').trigger("change");
+    await wrapper.get('[data-testid="plugin-upload-button"]').trigger("click");
+    await flushPromises();
+
+    const uploadCall = global.fetch.mock.calls.find(([url]) => url === "/api/v1/plugins/import?plugin_type=input");
+    expect(uploadCall).toBeTruthy();
+    expect(uploadCall[1].method).toBe("POST");
+    expect(uploadCall[1].headers.Authorization).toBe("Bearer test-token");
+    expect(uploadCall[1].body).toBeInstanceOf(FormData);
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("Demo Kafka");
+    expect(wrapper.get('[data-testid="plugin-upload-status"]').text()).toContain("导入成功");
   });
 
   it("persists the current console module across refresh and clears it on logout", async () => {

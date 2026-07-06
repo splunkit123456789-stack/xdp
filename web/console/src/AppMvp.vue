@@ -75,6 +75,7 @@
                   </div>
 
                   <div v-else class="param-panel">
+                    <div data-testid="kafka-runtime-disabled" class="note">Kafka 采集插件为 P1 能力，当前仅展示配置形态，暂不支持保存运行时采集。</div>
                     <label>传输层协议<select v-model="inputForm.transportProtocolKafka" class="select"><option>TCP</option></select></label>
                     <label>Broker 地址<input v-model="inputForm.brokers" class="field" placeholder="10.0.0.1:9092,10.0.0.2:9092" /></label>
                     <div class="two"><label>Topic<input v-model="inputForm.topic" class="field" placeholder="xdp-events" /></label><label>消费组<input v-model="inputForm.consumerGroup" class="field" placeholder="xdp-consumer" /></label></div>
@@ -179,18 +180,12 @@
                   </div>
                   <label>优先级<input v-model.number="ruleForm.priority" data-testid="rule-priority" class="field" min="1" required type="number" placeholder="100" /></label>
                   <div class="note">新增规则默认不绑定采集数据源，需手动选择；写入 index 仅展示逻辑 index，物理表由服务端内部映射。</div>
-                  <label>解析方式</label>
-                  <div class="plugin-grid parser-plugin-grid">
-                    <button data-testid="parser-regex" :class="{ active: ruleForm.plugin === '正则解析插件' }" class="plugin-card" type="button" @click="selectParserPlugin('正则解析插件')"><span class="plugin-icon icon-regex">F(x)</span>正则</button>
-                    <button :class="{ active: ruleForm.plugin === 'JSON 解析插件' }" class="plugin-card" type="button" @click="selectParserPlugin('JSON 解析插件')"><span class="plugin-icon icon-json">{ }</span>JSON</button>
-                    <button :class="{ active: ruleForm.plugin === '分隔符解析插件' }" class="plugin-card" type="button" @click="selectParserPlugin('分隔符解析插件')"><span class="plugin-icon icon-delimited">| |</span>分隔符</button>
-                    <button :class="{ active: ruleForm.plugin === 'KV 解析插件' }" class="plugin-card" type="button" @click="selectParserPlugin('KV 解析插件')"><span class="plugin-icon icon-kv">K=V</span>KV</button>
-                  </div>
-                  <label>日志样例<textarea v-model="ruleForm.sampleLog" data-testid="sample-log" required placeholder="请输入日志样例"></textarea></label>
-                  <div v-if="ruleForm.plugin === 'JSON 解析插件'" class="param-panel"><div class="note">JSON 默认解析全部层级，高级配置将生成 <code>INDEXED_EXTRACTIONS = json</code> 与 <code>KV_MODE = none</code>。</div></div>
-                  <div v-if="ruleForm.plugin === '正则解析插件'" class="param-panel"><label>正则表达式<textarea v-model="ruleForm.regexPattern" data-testid="regex-pattern" required placeholder="src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"></textarea></label></div>
-                  <div v-if="ruleForm.plugin === 'KV 解析插件'" class="param-panel"><label>分隔符<input v-model="ruleForm.kvPairDelimiter" class="field" placeholder="空格" /></label><label>K-V分隔符<input v-model="ruleForm.kvDelimiter" class="field" placeholder="=" /></label><label>引用符<input v-model="ruleForm.kvQuote" class="field" placeholder="&quot;" /></label></div>
-                  <div v-if="ruleForm.plugin === '分隔符解析插件'" class="param-panel"><label>分隔符<input v-model="ruleForm.delimitedDelimiter" class="field" placeholder="," /></label><label>引用符<input v-model="ruleForm.delimitedQuote" class="field" placeholder="&quot;" /></label><label>字段名列表<input v-model="ruleForm.delimitedFields" class="field" placeholder="event_time,src_ip,dst_ip,action,bytes" /></label></div>
+	                  <label>解析方式</label>
+	                  <div class="plugin-grid parser-plugin-grid">
+	                    <button data-testid="parser-regex" :class="{ active: ruleForm.plugin === '正则解析插件' }" class="plugin-card" type="button" @click="selectParserPlugin('正则解析插件')"><span class="plugin-icon icon-regex">F(x)</span>正则</button>
+	                  </div>
+	                  <label>日志样例<textarea v-model="ruleForm.sampleLog" data-testid="sample-log" required placeholder="请输入日志样例"></textarea></label>
+	                  <div v-if="ruleForm.plugin === '正则解析插件'" class="param-panel"><label>正则表达式<textarea v-model="ruleForm.regexPattern" data-testid="regex-pattern" required placeholder="src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"></textarea></label></div>
                   <div class="actions"><button data-testid="preview-parse" class="btn" type="button" @click="previewParse">预览解析结果</button></div>
                   <div data-testid="parse-preview" class="preview-box table-wrap"><table><thead><tr><th>序号</th><th>字段</th><th>值</th><th>字段类型</th></tr></thead><tbody><tr v-if="!previewRows.length"><td colspan="4">暂无解析结果</td></tr><tr v-for="(row, index) in previewRows" :key="`${row.field}-${index}`"><td>{{ index + 1 }}</td><td><code>{{ row.field }}</code></td><td>{{ row.value }}</td><td>{{ row.type }}</td></tr></tbody></table></div>
                   <details class="advanced-panel" open><summary>高级配置 / props.conf</summary><label>最终 props.conf 配置<textarea v-model="ruleForm.propsConf" data-testid="props-conf" class="props-editor" required placeholder="[source::firewall]&#10;TIME_PREFIX = event_time="></textarea></label></details>
@@ -223,6 +218,47 @@
               <article class="card"><div class="card-head result-head"><div><span>搜索结果</span><div class="result-meta">{{ resultStatus }}</div></div><span data-testid="result-mode" class="mode-pill">{{ resultMode === "stats" ? "统计视图" : "事件视图" }}</span></div><div data-testid="search-results" class="table-wrap"><table class="result-table"><thead><tr v-if="resultMode === 'stats'"><th v-for="field in statsFields" :key="field">{{ field }}</th></tr><tr v-else><th class="expand-col"></th><th>时间</th><th>事件</th></tr></thead><tbody><tr v-if="!searchResults.length"><td :colspan="resultMode === 'stats' ? Math.max(statsFields.length, 1) : 3">暂无匹配结果</td></tr><template v-for="(item, rowIndex) in searchResults" :key="item.id || item.group || rowIndex"><tr><template v-if="resultMode === 'stats'"><td v-for="field in statsFields" :key="field"><code>{{ formatStatsCell(field, item[field]) }}</code></td></template><template v-else><td><button :data-testid="`expand-event-${eventRowKey(item, rowIndex)}`" class="expand-toggle" type="button" @click="toggleEventDetail(item, rowIndex)">{{ isEventExpanded(item, rowIndex) ? "▼" : "▶" }}</button></td><td>{{ item.time }}</td><td><code class="multiline-code">{{ item.event }}</code></td></template></tr><tr v-if="resultMode !== 'stats' && isEventExpanded(item, rowIndex)" class="event-detail-row"><td></td><td colspan="2"><div class="event-detail"><div class="detail-raw"><span>raw</span><code class="multiline-code">{{ item.raw }}</code></div><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr v-for="(row, detailIndex) in item.detailRows" :key="`${row.name}-${detailIndex}`"><td><code>{{ row.name }}</code></td><td><code>{{ formatDetailValue(row.value) }}</code></td></tr></tbody></table></div></td></tr></template></tbody></table></div><div data-testid="search-pagination" class="pagination-bar"><div data-testid="search-pagination-right" class="pagination-controls"><button data-testid="search-prev" class="pager-arrow" type="button" :disabled="searchPagination.page <= 1 || isSearchLoading" aria-label="上一页" @click="goSearchPage(searchPagination.page - 1)">‹</button><template v-for="item in visibleSearchPages" :key="item.key"><span v-if="item.ellipsis" class="pager-ellipsis">...</span><button v-else :data-testid="`search-page-${item.page}`" class="pager-page" :class="{ active: item.page === searchPagination.page }" type="button" :disabled="isSearchLoading" @click="goSearchPage(item.page)">{{ item.label }}</button></template><button data-testid="search-next" class="pager-arrow" type="button" :disabled="searchPagination.page >= totalSearchPages || isSearchLoading" aria-label="下一页" @click="goSearchPage(searchPagination.page + 1)">›</button><label class="page-size-select"><select v-model.number="searchPageSize" data-testid="search-page-size" class="select compact-select" @change="runSearchFirstPage"><option v-for="size in searchPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label></div></div></article>
             </div>
           </section>
+
+          <section v-if="currentModule === 'plugins'" data-testid="plugins-page" class="tab-panel">
+            <div class="panel-header"><h2><span class="page-icon page-icon-plugins">PL</span>插件管理</h2><span class="badge">采集 / 解析 / 搜索插件</span></div>
+            <div class="search-layout">
+              <article class="card">
+                <div class="card-head"><span>插件类型</span><span class="status-line">上传插件包后默认禁用，需后续启用后才参与运行</span></div>
+                <div class="plugin-type-tabs" role="tablist" aria-label="插件类型">
+                  <button v-for="tab in pluginTabs" :key="tab.key" :data-testid="`plugin-tab-${tab.key}`" :class="{ active: currentPluginTab === tab.key }" type="button" @click="selectPluginTab(tab.key)">
+                    <span>{{ tab.label }}</span>
+                    <small>{{ pluginTypeCount(tab.key) }}</small>
+                  </button>
+                </div>
+                <div class="plugin-upload-panel">
+                  <label>插件包上传<input data-testid="plugin-upload-file" class="field" type="file" accept=".zip,application/zip" @change="onPluginFileChange" /></label>
+                  <button data-testid="plugin-upload-button" class="btn" type="button" @click="uploadPluginPackage">导入插件包</button>
+                  <span data-testid="plugin-upload-status" class="status-line">{{ pluginUploadStatus }}</span>
+                </div>
+                <p v-if="pluginUploadError" class="field-error form-error">{{ pluginUploadError }}</p>
+              </article>
+
+              <article class="card">
+                <div class="card-head"><span>{{ currentPluginTabLabel }}</span><span class="status-line">{{ filteredPlugins.length }} 个插件</span></div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>插件名称</th><th>编码</th><th>版本</th><th>运行时</th><th>状态</th><th>校验值</th></tr></thead>
+                    <tbody>
+                      <tr v-if="!filteredPlugins.length"><td colspan="6">暂无插件</td></tr>
+                      <tr v-for="item in filteredPlugins" :key="`${item.plugin_type}-${item.plugin_code}-${item.plugin_version}`">
+                        <td>{{ item.name || item.plugin_code }}</td>
+                        <td><code>{{ item.plugin_code }}</code></td>
+                        <td>{{ item.plugin_version || "1.0.0" }}</td>
+                        <td>{{ item.runtime || "go_builtin" }}</td>
+                        <td><span class="status-pill" :class="item.status === 'active' ? 'runtime-running' : 'runtime-stopped'">{{ pluginStatusLabel(item.status) }}</span></td>
+                        <td><code class="muted-code">{{ item.checksum || "builtin" }}</code></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </div>
+          </section>
         </section>
       </section>
     </section>
@@ -240,14 +276,14 @@ const auth = reactive({ enabled: true, authenticated: false });
 const credentials = reactive({ username: "admin", password: "" });
 const loginError = ref("");
 const lastProtectedPayload = ref("");
-const modules = [{ key: "collect", label: "采集配置" }, { key: "parse", label: "解析配置" }, { key: "index", label: "索引配置" }, { key: "search", label: "搜索页" }];
+const modules = [{ key: "collect", label: "采集配置" }, { key: "parse", label: "解析配置" }, { key: "index", label: "索引配置" }, { key: "search", label: "搜索页" }, { key: "plugins", label: "插件管理" }];
 const currentModule = ref(defaultModuleKey);
 
 const inputConfigs = ref([
   { id: "in-1", name: "Firewall Syslog", plugin: "Syslog", status: "active", internalRawTopic: "raw.ds_firewall_syslog", collectorPort: "5514", transportProtocol: "TCP", encoding: "UTF-8", logFilterEnabled: "on", logFilterRegex: "action=(allow|deny)" },
   { id: "in-2", name: "Kafka Stream", plugin: "Kafka", status: "disabled", internalRawTopic: "raw.ds_kafka_stream", brokers: "10.0.0.1:9092,10.0.0.2:9092", topic: "xdp-events", consumerGroup: "xdp-consumer", securityProtocol: "PLAINTEXT", consumeStrategy: "最早", logFilterEnabledKafka: "off" }
 ]);
-const parseRules = ref([{ id: "rule-json", name: "Application JSON", plugin: "JSON 解析插件", dataSourceName: "", inputRoute: "internal_raw_topic", outputIndex: "app", propsConf: "[source::app-json]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none" }, { id: "rule-regex", name: "Firewall Regex", plugin: "正则解析插件", dataSourceName: "Firewall Syslog", inputRoute: "raw.ds_firewall_syslog", outputIndex: "firewall", propsConf: "[source::firewall]\nEXTRACT-custom = src=(?<src_ip>\\S+)" }]);
+const parseRules = ref([{ id: "rule-regex", name: "Firewall Regex", plugin: "正则解析插件", dataSourceName: "Firewall Syslog", inputRoute: "raw.ds_firewall_syslog", outputIndex: "firewall", propsConf: "[source::firewall]\nEXTRACT-custom = src=(?<src_ip>\\S+)" }]);
 const parserPlugins = ref([]);
 const parseConfigLoaded = ref(false);
 const indexConfigLoaded = ref(false);
@@ -300,17 +336,29 @@ const savedOpen = ref(false);
 const savedSearchError = ref("");
 const savedSearches = ref([]);
 const savedSearchesLoaded = ref(false);
+const pluginTabs = [
+  { key: "input", label: "采集插件" },
+  { key: "parser", label: "解析插件" },
+  { key: "search_command", label: "搜索命令插件" }
+];
+const currentPluginTab = ref("input");
+const pluginCatalog = ref([]);
+const pluginsLoaded = ref(false);
+const pluginUploadFile = ref(null);
+const pluginUploadStatus = ref("");
+const pluginUploadError = ref("");
 const catalog = [
-  { id: "evt-1", time: timeAgo(0, 0, 12), index: "app", source: "http-json", sourcetype: "json", host: "api-01", service: "api", action: "allow", bytes: 1024, event: 'service=api level=info msg="login ok" bytes=1024' },
-  { id: "evt-2", time: timeAgo(0, 0, 36), index: "app", source: "http-json", sourcetype: "json", host: "web-01", service: "api", action: "allow", bytes: 3840, event: 'service=api level=warn msg="slow request" bytes=3840' },
-  { id: "evt-3", time: timeAgo(1, 3, 0), index: "app", source: "http-json", sourcetype: "json", host: "pay-01", service: "checkout", action: "allow", bytes: 2048, event: 'service=checkout level=info msg="payment ok" bytes=2048' },
+  { id: "evt-1", time: timeAgo(0, 0, 12), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "api-01", service: "api", action: "allow", bytes: 1024, event: 'service=api level=info msg="login ok" bytes=1024' },
+  { id: "evt-2", time: timeAgo(0, 0, 36), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "web-01", service: "api", action: "allow", bytes: 3840, event: 'service=api level=warn msg="slow request" bytes=3840' },
+  { id: "evt-3", time: timeAgo(1, 3, 0), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "pay-01", service: "checkout", action: "allow", bytes: 2048, event: 'service=checkout level=info msg="payment ok" bytes=2048' },
   { id: "evt-4", time: timeAgo(1, 4, 0), index: "firewall", source: "syslog-udp", sourcetype: "firewall", host: "edge-01", service: "firewall", action: "deny", bytes: 2048, event: "src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048" }
 ];
 const counts = computed(() => ({
   collect: Number(collectPagination.value.total || inputConfigs.value.length),
   parse: Number(parsePagination.value.total || parseRules.value.length),
   index: Number(indexPagination.value.total || indexes.value.length),
-  search: savedSearches.value.length
+  search: savedSearches.value.length,
+  plugins: pluginCatalog.value.length
 }));
 const businessIndexes = computed(() => indexes.value.filter((item) => !isSystemIndex(item)));
 const selectedRuntimeName = computed(() => inputConfigs.value.find((item) => item.id === selectedRuntimeId.value)?.name || "");
@@ -368,6 +416,7 @@ watch(currentModule, async (module) => {
   }
   if (module === "index") await loadIndexConfig();
   if (module === "search" && !savedSearchesLoaded.value) await loadSavedSearches();
+  if (module === "plugins" && !pluginsLoaded.value) await loadPlugins();
 });
 
 function navCount(key) { return counts.value[key] || 0; }
@@ -539,6 +588,18 @@ async function loadIndexConfig(force = false, page = indexPagination.value.page 
     indexConfigLoaded.value = false;
   }
 }
+async function loadPlugins(force = false) {
+  if (pluginsLoaded.value && !force) return;
+  try {
+    const payload = await requestJSON("/api/v1/plugins", { auth: true });
+    const items = Array.isArray(payload.plugins) ? payload.plugins : (Array.isArray(payload) ? payload : []);
+    pluginCatalog.value = items.map(apiPluginToForm).filter(isProductVisiblePlugin);
+    pluginsLoaded.value = true;
+  } catch (error) {
+    pluginUploadError.value = error.message || "插件列表加载失败";
+    pluginsLoaded.value = false;
+  }
+}
 async function requestJSON(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.auth) {
@@ -560,6 +621,86 @@ function defaultInputForm() { return { name: "", status: "active", plugin: "Sysl
 function defaultRuleForm() { return { name: "", plugin: "正则解析插件", dataSourceName: "", inputRoute: "internal_raw_topic", outputIndex: "app", priority: 100, sampleLog: "", regexPattern: "", kvPairDelimiter: "空格", kvDelimiter: "=", kvQuote: '"', delimitedDelimiter: ",", delimitedQuote: '"', delimitedFields: "field1,field2,field3", propsConf: "" }; }
 function defaultIndexForm() { return { name: "", ttl: 30, status: "active" }; }
 function assignReactive(target, source) { Object.keys(target).forEach((key) => delete target[key]); Object.assign(target, source); }
+const currentPluginTabLabel = computed(() => pluginTabs.find((item) => item.key === currentPluginTab.value)?.label || "插件列表");
+const filteredPlugins = computed(() => pluginCatalog.value.filter((item) => item.plugin_type === currentPluginTab.value));
+function selectPluginTab(tab) {
+  currentPluginTab.value = tab;
+  pluginUploadStatus.value = "";
+  pluginUploadError.value = "";
+}
+function pluginTypeCount(type) {
+  return pluginCatalog.value.filter((item) => item.plugin_type === type).length;
+}
+function onPluginFileChange(event) {
+  pluginUploadFile.value = event.target.files?.[0] || null;
+  pluginUploadStatus.value = "";
+  pluginUploadError.value = "";
+}
+async function uploadPluginPackage() {
+  pluginUploadError.value = "";
+  if (!pluginUploadFile.value) {
+    pluginUploadStatus.value = "请选择插件包";
+    return;
+  }
+  const formData = new FormData();
+  formData.append("file", pluginUploadFile.value);
+  formData.append("plugin_type", currentPluginTab.value);
+  try {
+    const imported = await requestJSON(`/api/v1/plugins/import?plugin_type=${encodeURIComponent(currentPluginTab.value)}`, {
+      auth: true,
+      method: "POST",
+      body: formData
+    });
+    const item = apiPluginToForm(imported);
+    pluginCatalog.value = upsertPlugin(pluginCatalog.value, item);
+    pluginsLoaded.value = true;
+    pluginUploadStatus.value = `导入成功：${item.name || item.plugin_code}`;
+  } catch (error) {
+    pluginUploadError.value = error.message || "插件导入失败";
+  }
+}
+function apiPluginToForm(item = {}) {
+  return {
+    plugin_code: item.plugin_code || item.code || "",
+    plugin_type: normalizePluginType(item.plugin_type || item.type || ""),
+    plugin_version: item.plugin_version || item.version || "1.0.0",
+    name: item.name || item.plugin_code || item.code || "",
+    runtime: item.runtime || "go_builtin",
+    status: item.status || "disabled",
+    checksum: item.checksum || "builtin"
+  };
+}
+function isProductVisiblePlugin(item = {}) {
+  const type = normalizePluginType(item.plugin_type);
+  const code = String(item.plugin_code || "").trim();
+  if (isHiddenProductPlugin(type, code)) return false;
+  if (type === "input") return code === "syslog" || isImportedPlugin(item);
+  if (type === "parser") return code === "regex" || isImportedPlugin(item);
+  if (type === "search_command") return code === "stats" || isImportedPlugin(item);
+  return false;
+}
+function isHiddenProductPlugin(type, code) {
+  return type === "input" && code === "http-input" ||
+    type === "parser" && (code === "json-parser" || code === "props-conf-parser");
+}
+function isImportedPlugin(item = {}) {
+  const checksum = String(item.checksum || "").trim();
+  return checksum !== "" && checksum !== "builtin";
+}
+function normalizePluginType(type) {
+  const value = String(type || "").trim().toLowerCase();
+  if (value === "search") return "search_command";
+  if (value === "collect" || value === "collector") return "input";
+  if (value === "parse") return "parser";
+  return value;
+}
+function upsertPlugin(items, item) {
+  const key = (current) => `${current.plugin_type}/${current.plugin_code}@${current.plugin_version}`;
+  return items.some((current) => key(current) === key(item)) ? items.map((current) => key(current) === key(item) ? item : current) : [item, ...items];
+}
+function pluginStatusLabel(status) {
+  return status === "active" ? "已启用" : "未启用";
+}
 async function saveInput() {
   inputPortError.value = "";
   inputNameError.value = "";
@@ -737,6 +878,7 @@ function validateInputForm(form) {
     if (!String(form.encoding || "").trim()) return "字符编码为必填项";
     if (form.logFilterEnabled === "on" && !String(form.logFilterRegex || "").trim()) return "正则筛选为必填项";
   }
+  if (form.plugin === "Kafka") return "Kafka 采集插件运行时能力未启用，P1 支持";
   return "";
 }
 function isCollectSourcePayload(source) { const code = source.plugin_code || source.type; return code === "syslog" || code === "kafka"; }
@@ -786,14 +928,11 @@ async function previewParse() {
     const response = await requestJSON(`/api/v1/parse-rules/${encodeURIComponent(id)}/test`, { auth: true, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
     previewRows.value = response.fields || [];
     return;
-  } catch {
-    const sample = ruleForm.sampleLog || "";
-    if (ruleForm.plugin === "JSON 解析插件") previewRows.value = previewJson(sample);
-    if (ruleForm.plugin === "正则解析插件") previewRows.value = previewRegex(sample, ruleForm.regexPattern);
-    if (ruleForm.plugin === "KV 解析插件") previewRows.value = previewKV(sample, ruleForm.kvDelimiter);
-    if (ruleForm.plugin === "分隔符解析插件") previewRows.value = previewDelimited(sample, ruleForm.delimitedDelimiter, ruleForm.delimitedFields);
-  }
-}
+	  } catch {
+	    const sample = ruleForm.sampleLog || "";
+	    previewRows.value = previewRegex(sample, ruleForm.regexPattern);
+	  }
+	}
 function syncPropsConf() {
   const nextGenerated = buildPropsConf(ruleForm);
   const manualLines = preserveManualPropsConf(ruleForm.propsConf, generatedPropsConf.value, nextGenerated);
@@ -868,31 +1007,26 @@ function validateRuleForm(form) {
   if (!String(form.propsConf || "").trim()) return "最终 props.conf 配置项为必填项";
   return "";
 }
-function buildPropsConf(data) {
-  const sourceName = String(data.name || "custom").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom";
-  if (data.plugin === "JSON 解析插件") return `[source::${sourceName}]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none`;
-  if (data.plugin === "正则解析插件") return `[source::${sourceName}]\nEXTRACT-custom = ${(data.regexPattern || "field=(?<field>\\S+)").replace(/\?P</g, "?<")}`;
-  if (data.plugin === "KV 解析插件") return `[source::${sourceName}]\nKV_MODE = auto\nFIELD_DELIMITER = ${normalizeFieldDelimiter(data.kvPairDelimiter)}\nKV_DELIMITER = ${data.kvDelimiter || "="}\nFIELD_QUOTE = ${data.kvQuote || '"'}`;
-  return `[source::${sourceName}]\nINDEXED_EXTRACTIONS = csv\nFIELD_DELIMITER = ${data.delimitedDelimiter || ","}\nFIELD_NAMES = ${data.delimitedFields || "field1,field2,field3"}\nFIELD_QUOTE = ${data.delimitedQuote || '"'}`;
-}
+	function buildPropsConf(data) {
+	  const sourceName = String(data.name || "custom").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom";
+	  return `[source::${sourceName}]\nEXTRACT-custom = ${(data.regexPattern || "field=(?<field>\\S+)").replace(/\?P</g, "?<")}`;
+	}
 function ruleFormToAPI(form) {
   const plugin = parserPluginCode(form.plugin);
   return { name: form.name, status: "active", parser_plugin: plugin, parser_plugin_version: "1.0.0", data_source_name: form.dataSourceName, input_route: form.inputRoute || "internal_raw_topic", output_index: form.outputIndex || "app", priority: Number(form.priority || 100), stage: "ingest", sample_event: form.sampleLog, plugin_config: pluginConfigFromRuleForm(form, plugin), props_conf: form.propsConf || buildPropsConf(form) };
 }
-function pluginConfigFromRuleForm(form, plugin) {
-  if (plugin === "regex") return { regex_pattern: form.regexPattern };
-  if (plugin === "kv") return { field_delimiter: normalizeFieldDelimiter(form.kvPairDelimiter), kv_delimiter: form.kvDelimiter || "=", field_quote: form.kvQuote || '"' };
-  if (plugin === "delimited") return { field_delimiter: form.delimitedDelimiter || ",", field_names: form.delimitedFields.split(",").map((item) => item.trim()).filter(Boolean), field_quote: form.delimitedQuote || '"' };
-  return { flatten: true };
-}
+	function pluginConfigFromRuleForm(form, plugin) {
+	  if (plugin === "regex") return { source_field: "raw", regex_pattern: form.regexPattern, target: "fields", field_types: {}, on_no_match: "continue" };
+	  return {};
+	}
 function apiRuleToForm(rule) {
   const config = rule.plugin_config || {};
   const plugin = parserPluginLabel(rule.parser_plugin);
   return { ...defaultRuleForm(), id: rule.id, name: rule.name, plugin, dataSourceName: rule.data_source_name || "", inputRoute: rule.input_route || "internal_raw_topic", outputIndex: rule.output_index || "app", priority: Number(rule.priority || 100), sampleLog: rule.sample_event || "", regexPattern: config.regex_pattern || "", kvPairDelimiter: displayDelimiter(config.field_delimiter), kvDelimiter: config.kv_delimiter || "=", kvQuote: config.field_quote || '"', delimitedDelimiter: config.field_delimiter || ",", delimitedQuote: config.field_quote || '"', delimitedFields: Array.isArray(config.field_names) ? config.field_names.join(",") : (config.field_names || "field1,field2,field3"), propsConf: rule.props_conf || "" };
 }
 
-function parserPluginCode(label) { return { "JSON 解析插件": "json", "KV 解析插件": "kv", "分隔符解析插件": "delimited", "正则解析插件": "regex" }[label] || label; }
-function parserPluginLabel(code) { return { json: "JSON 解析插件", kv: "KV 解析插件", delimited: "分隔符解析插件", regex: "正则解析插件" }[code] || code; }
+	function parserPluginCode(label) { return { "正则解析插件": "regex" }[label] || label; }
+	function parserPluginLabel(code) { return { regex: "正则解析插件" }[code] || code; }
 function normalizeFieldDelimiter(value) { return value === "空格" ? " " : (value || " "); }
 function displayDelimiter(value) { return value === " " ? "空格" : (value || "空格"); }
 function previewJson(sample) { try { return flattenJson(JSON.parse(sample)); } catch { return [{ field: "error", value: "JSON 样例无法解析", type: "error" }]; } }
@@ -1279,6 +1413,7 @@ function formatTimelineTick(value) {
 @media (max-width:720px){.parser-plugin-grid{grid-template-columns:1fr}}
 @media (max-width:720px){.runtime-detail-grid{grid-template-columns:1fr}}
 .panel-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-left:auto}
+.plugin-type-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}.plugin-type-tabs button{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:14px;color:#dce5fb;background:rgba(255,255,255,.055);font-weight:800}.plugin-type-tabs button.active{border-color:rgba(85,223,255,.78);color:#fff;background:rgba(85,223,255,.12);box-shadow:0 0 30px rgba(85,223,255,.1)}.plugin-type-tabs small{display:grid;place-items:center;min-width:28px;height:24px;border-radius:999px;background:rgba(85,223,255,.14);color:inherit}.plugin-upload-panel{display:grid;grid-template-columns:minmax(260px,1fr) auto minmax(180px,auto);align-items:end;gap:12px}.console-shell[data-theme="ops-console"] .page-icon-plugins{background:linear-gradient(135deg,#13bfb4,#4f86d9)}.console-shell[data-theme="ops-console"] .plugin-type-tabs button{border-color:#d6e1e9;color:#243447;background:#fff}.console-shell[data-theme="ops-console"] .plugin-type-tabs button.active{border-color:var(--ops-primary);color:#0d4d4b;background:#e8fbf8;box-shadow:0 10px 28px rgba(19,191,180,.16)}.console-shell[data-theme="ops-console"] .plugin-type-tabs small{background:#dff7f4;color:#08776f}
 .config-drawer{position:fixed;z-index:40;top:104px;right:max(22px,calc((100vw - 1500px)/2 + 22px));width:min(560px,calc(100vw - 44px));max-height:calc(100vh - 132px);overflow:auto;animation:drawerSlideIn .18s ease-out}.config-drawer:before{content:"";position:fixed;inset:0;z-index:-1;background:rgba(12,22,32,.18);pointer-events:none}.content-grid{grid-template-columns:1fr}@keyframes drawerSlideIn{from{transform:translateX(28px);opacity:.72}to{transform:translateX(0);opacity:1}}@media (max-width:720px){.config-drawer{top:0;right:0;bottom:0;width:100vw;max-height:none;border-radius:0;overflow:auto}}
 .content-grid.list-first{grid-template-columns:1fr}
 </style>

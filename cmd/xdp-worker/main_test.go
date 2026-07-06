@@ -14,23 +14,18 @@ func TestRawTopicForSource(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "http input plugin",
-			source: pipeline.SourceSpec{Plugin: "http-input"},
-			want:   "xdp.raw.http",
-		},
-		{
 			name:   "syslog input plugin",
-			source: pipeline.SourceSpec{Plugin: "syslog-input"},
+			source: pipeline.SourceSpec{Plugin: "syslog"},
 			want:   "xdp.raw.syslog",
 		},
 		{
 			name:   "raw source override",
-			source: pipeline.SourceSpec{Plugin: "http-input", Config: map[string]any{"raw_source": "custom"}},
+			source: pipeline.SourceSpec{Plugin: "syslog", Config: map[string]any{"raw_source": "custom"}},
 			want:   "xdp.raw.custom",
 		},
 		{
 			name:   "internal raw topic override",
-			source: pipeline.SourceSpec{Plugin: "http-input", Config: map[string]any{"internal_raw_topic": "raw.ds_explicit"}},
+			source: pipeline.SourceSpec{Plugin: "syslog", Config: map[string]any{"internal_raw_topic": "raw.ds_explicit"}},
 			want:   "raw.ds_explicit",
 		},
 	}
@@ -50,10 +45,10 @@ func TestRawTopicForSource(t *testing.T) {
 
 func TestBuildSourcePipelinesRejectsDuplicateTopic(t *testing.T) {
 	pipes := []pipeline.Pipeline{
-		pipeline.MVPJSONPipeline(),
-		pipeline.MVPJSONPipeline(),
+		pipeline.SyslogCollectionPipeline(),
+		pipeline.SyslogCollectionPipeline(),
 	}
-	pipes[1].Metadata.ID = "duplicate-json-pipeline"
+	pipes[1].Metadata.ID = "duplicate-syslog-pipeline"
 
 	_, err := buildSourcePipelines(newRegistry(), pipes)
 	if err == nil {
@@ -62,16 +57,16 @@ func TestBuildSourcePipelinesRejectsDuplicateTopic(t *testing.T) {
 }
 
 func TestBuildSourcePipelinesAcceptsParserGroupAndValidatesChildren(t *testing.T) {
-	pipe := pipeline.MVPJSONPipeline()
+	pipe := pipeline.SyslogCollectionPipeline()
 	pipe.Spec.Stages = []pipeline.StageSpec{{
 		ID:   "parse-rule-group",
 		Type: "parser_group",
 		Stages: []pipeline.StageSpec{{
-			ID:      "parse-rule-json",
+			ID:      "parse-rule-regex",
 			Type:    "parser",
-			Plugin:  "json-parser",
+			Plugin:  "regex",
 			Version: "1.0.0",
-			Config:  map[string]any{"source": "raw", "target": "fields"},
+			Config:  map[string]any{"regex_pattern": "src=(?<src_ip>\\S+)"},
 		}},
 	}}
 
@@ -83,7 +78,7 @@ func TestBuildSourcePipelinesAcceptsParserGroupAndValidatesChildren(t *testing.T
 func TestEnsureSourceTopicsCreatesEachRawTopic(t *testing.T) {
 	ensurer := &recordingTopicEnsurer{}
 	sources := []sourcePipeline{
-		{Topic: "xdp.raw.http"},
+		{Topic: "xdp.raw.syslog"},
 		{Topic: "raw.ds_custom_syslog"},
 	}
 
@@ -91,7 +86,7 @@ func TestEnsureSourceTopicsCreatesEachRawTopic(t *testing.T) {
 		t.Fatalf("ensureSourceTopics() error = %v", err)
 	}
 
-	want := []string{"xdp.raw.http", "raw.ds_custom_syslog"}
+	want := []string{"xdp.raw.syslog", "raw.ds_custom_syslog"}
 	if len(ensurer.topics) != len(want) {
 		t.Fatalf("ensured topics = %#v, want %#v", ensurer.topics, want)
 	}

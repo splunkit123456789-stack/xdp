@@ -135,7 +135,16 @@ describe("XDP parse config API integration", () => {
           { plugin_code: "json", display_name: "JSON 解析插件", runtime_capabilities: { preview: true } },
           { plugin_code: "kv", display_name: "KV 解析插件", runtime_capabilities: { preview: true } },
           { plugin_code: "delimited", display_name: "分隔符解析插件", runtime_capabilities: { preview: true } },
-          { plugin_code: "regex", display_name: "正则解析插件", runtime_capabilities: { preview: true } }
+          {
+            plugin_code: "regex",
+            plugin_type: "parser",
+            display_name: "正则解析插件",
+            version: "1.0.0",
+            runtime: "go_builtin",
+            status: "active",
+            schema_summary: { required: ["sample_event", "regex_pattern", "props_conf"] },
+            runtime_capabilities: { preview: true, ingest_parse: true, hot_reload: true, props_conf_generate: true }
+          }
         ]
       }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
@@ -223,6 +232,11 @@ describe("XDP parse config API integration", () => {
       status: "active"
     });
     expect(body.plugin_config.regex_pattern).toBe("src=(?<src_ip>\\S+) bytes=(?<bytes>\\d+)");
+    expect(body.plugin_config).toMatchObject({
+      source_field: "raw",
+      target: "fields",
+      on_no_match: "continue"
+    });
     expect(body).not.toHaveProperty("hot_fields");
     expect(body).not.toHaveProperty("source");
     expect(body).not.toHaveProperty("sourcetype");
