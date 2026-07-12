@@ -78,6 +78,7 @@ type IndexSummary struct {
 	LatestEventTime string `json:"latest_event_time,omitempty"`
 	StorageBytes    uint64 `json:"storage_bytes"`
 	TTLDays         int    `json:"ttl_days"`
+	PhysicalTTLDays int    `json:"physical_ttl_days,omitempty"`
 	Storage         string `json:"storage"`
 	Status          string `json:"status,omitempty"`
 	Configured      bool   `json:"configured"`
@@ -85,6 +86,8 @@ type IndexSummary struct {
 	IndexType       string `json:"index_type,omitempty"`
 	UpdatedAt       string `json:"updated_at,omitempty"`
 }
+
+type IndexTrendPoint = ch.IndexTrendPoint
 
 type IndexConfigRequest struct {
 	IndexName   string `json:"index_name"`
@@ -288,21 +291,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func defaultDataSources() map[string]DataSource {
-	now := time.Now().UTC()
-	return map[string]DataSource{
-		"syslog-default": {
-			ID:               "syslog-default",
-			Type:             "syslog",
-			Name:             "Default Syslog",
-			Status:           "active",
-			Addr:             ":5514",
-			Protocol:         "UDP",
-			DefaultIndex:     "app",
-			InternalRawTopic: "xdp.raw.syslog",
-			PipelineID:       pipeline.SyslogCollectionPipelineID,
-			UpdatedAt:        now,
-		},
-	}
+	return map[string]DataSource{}
 }
 
 func defaultIndexConfigs() map[string]IndexSummary {
@@ -322,44 +311,13 @@ func defaultIndexConfigs() map[string]IndexSummary {
 }
 
 func defaultSavedSearches() map[string]mysqlstore.SavedSearch {
-	now := time.Now()
-	items := make(map[string]mysqlstore.SavedSearch)
-	for _, item := range defaultSavedSearchList() {
-		item.CreatedAt = now
-		item.UpdatedAt = now
-		items[item.ID] = item
-	}
-	return items
-}
-
-func defaultSavedSearchList() []mysqlstore.SavedSearch {
-	return []mysqlstore.SavedSearch{
-		{
-			ID:            "s-1",
-			Name:          "App stats",
-			SPL:           "index=app | stats count as total by service",
-			TimeRangeType: "近 1 天",
-			Visibility:    "private",
-			Status:        "active",
-		},
-		{
-			ID:            "s-2",
-			Name:          "Firewall deny",
-			SPL:           "index=firewall action=deny",
-			TimeRangeType: "近 7 天",
-			Visibility:    "private",
-			Status:        "active",
-		},
-	}
+	return make(map[string]mysqlstore.SavedSearch)
 }
 
 func (h *Handler) seedConfigStore(ctx context.Context) {
 	if h.mysql != nil {
 		if err := h.mysql.SeedParserPlugins(ctx, parserPluginStoreItems()); err != nil {
 			h.logger.Warn("seed parser plugins failed", "error", err)
-		}
-		if err := h.mysql.SeedSavedSearches(ctx, defaultSavedSearchList()); err != nil {
-			h.logger.Warn("seed saved searches failed", "error", err)
 		}
 	}
 	for _, source := range h.dataSources {
@@ -571,6 +529,12 @@ func runtimeStateForDataSource(source DataSource) dataSourceRuntimeState {
 	endpoint := ""
 	if pluginCode == "syslog" && port > 0 {
 		endpoint = fmt.Sprintf("%s://0.0.0.0:%d", protocol, port)
+	} else if pluginCode == "kafka" {
+		brokers := strings.Join(stringListConfig(source.PluginConfig, "brokers"), ",")
+		topic := strings.TrimSpace(stringConfig(source.PluginConfig, "topic", ""))
+		if brokers != "" && topic != "" {
+			endpoint = fmt.Sprintf("kafka://%s/%s", brokers, topic)
+		}
 	}
 	runtimeStatus := "unknown"
 	listenerStatus := "unknown"
@@ -582,6 +546,17 @@ func runtimeStateForDataSource(source DataSource) dataSourceRuntimeState {
 			runtimeStatus = "stopped"
 			listenerStatus = "stopped"
 		}
+	} else if pluginCode == "kafka" {
+		if status == "active" {
+			runtimeStatus = "running"
+			listenerStatus = "consuming"
+		} else {
+			runtimeStatus = "stopped"
+			listenerStatus = "stopped"
+		}
+	} else if pluginCode != "" {
+		runtimeStatus = "stopped"
+		listenerStatus = "disabled"
 	}
 	return dataSourceRuntimeState{
 		ID:               source.ID,
@@ -652,7 +627,7 @@ func (h *Handler) dataSource(id string) DataSource {
 		}
 		return migrateLegacyRawTopic(source)
 	}
-	return migrateLegacyRawTopic(defaultDataSources()["syslog-default"])
+	return DataSource{}
 }
 
 func (h *Handler) listDataSources(w http.ResponseWriter, r *http.Request) {
@@ -751,7 +726,7 @@ func (h *Handler) saveDataSource(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) pipelineForSource(id string) pipeline.Pipeline {
 	source := h.dataSource(id)
-	pipe := pipelineFromDataSource(source)
+	pipe := h.pipelineFromDataSource(source)
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
 		pipe.Spec.Outputs = []pipeline.OutputSpec{{ID: "write-clickhouse", Plugin: "clickhouse-output", Version: "1.0.0", Config: map[string]any{"endpoint": env("XDP_CLICKHOUSE_ENDPOINT", "http://127.0.0.1:8123"), "database": env("XDP_CLICKHOUSE_DATABASE", "xdp"), "username": env("XDP_CLICKHOUSE_USERNAME", ""), "password": env("XDP_CLICKHOUSE_PASSWORD", ""), "index": source.DefaultIndex}}}
 	}
@@ -771,7 +746,7 @@ func (h *Handler) buildRuntimePipelinesLocked() []pipeline.Pipeline {
 		if source.Status != "" && source.Status != "active" {
 			continue
 		}
-		pipe := pipelineFromDataSource(source)
+		pipe := h.pipelineFromDataSourceLocked(source)
 		pipe.Spec.Stages = h.appendParseRuleStagesLocked(pipe.Spec.Stages, source)
 		applyPipelineOutputIndex(&pipe, h.parseRuleOutputIndexLocked(source))
 		items = append(items, pipe)
@@ -780,7 +755,23 @@ func (h *Handler) buildRuntimePipelinesLocked() []pipeline.Pipeline {
 	return items
 }
 
-func pipelineFromDataSource(source DataSource) pipeline.Pipeline {
+func (h *Handler) pipelineFromDataSource(source DataSource) pipeline.Pipeline {
+	version := firstNonEmpty(strings.TrimSpace(source.PluginVersion), "1.0.0")
+	if current, ok := h.findPlugin("input", source.PluginCode, ""); ok {
+		version = current.PluginVersion
+	}
+	return pipelineFromDataSourceVersion(source, version)
+}
+
+func (h *Handler) pipelineFromDataSourceLocked(source DataSource) pipeline.Pipeline {
+	version := firstNonEmpty(strings.TrimSpace(source.PluginVersion), "1.0.0")
+	if current, ok := h.importedPlugins[pluginKey("input", source.PluginCode, "")]; ok {
+		version = current.PluginVersion
+	}
+	return pipelineFromDataSourceVersion(source, version)
+}
+
+func pipelineFromDataSourceVersion(source DataSource, pluginVersion string) pipeline.Pipeline {
 	if source.DefaultIndex == "" {
 		source.DefaultIndex = "app"
 	}
@@ -794,6 +785,18 @@ func pipelineFromDataSource(source DataSource) pipeline.Pipeline {
 		pipe.Metadata.Name = source.Name + " Pipeline"
 		pipe.Spec.Source.ID = source.ID
 		pipe.Spec.Source.Config = sourceConfig(source)
+		return pipe
+	case "kafka":
+		pipe := pipeline.SyslogCollectionPipeline()
+		pipe.Metadata.ID = source.PipelineID
+		pipe.Metadata.Name = source.Name + " Pipeline"
+		pipe.Spec.Source.ID = source.ID
+		pipe.Spec.Source.Plugin = "kafka"
+		pipe.Spec.Source.Version = pluginVersion
+		pipe.Spec.Source.Config = sourceConfig(source)
+		for key, value := range source.PluginConfig {
+			pipe.Spec.Source.Config[key] = value
+		}
 		return pipe
 	default:
 		return pipeline.SyslogCollectionPipeline()
@@ -826,6 +829,37 @@ func sourceConfig(source DataSource) map[string]any {
 	return config
 }
 
+func stringListConfig(config map[string]any, key string) []string {
+	if config == nil {
+		return nil
+	}
+	switch value := config[key].(type) {
+	case []string:
+		return compactStringList(value)
+	case []any:
+		items := make([]string, 0, len(value))
+		for _, item := range value {
+			items = append(items, fmt.Sprint(item))
+		}
+		return compactStringList(items)
+	case string:
+		return compactStringList(strings.Split(value, ","))
+	default:
+		return nil
+	}
+}
+
+func compactStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func (h *Handler) publishRuntimePipelines(ctx context.Context) {
 	if h.mysql == nil {
 		return
@@ -847,13 +881,49 @@ func (h *Handler) listRuntimePipelines(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pipelines": items})
 }
 
+func (h *Handler) writerRuntime(w http.ResponseWriter, r *http.Request) {
+	baseURL := strings.TrimRight(env("XDP_WRITER_BASE_URL", "http://127.0.0.1:8082"), "/")
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/writer/runtime", nil)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unknown", "error": err.Error()})
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unknown", "error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unknown", "error": "writer runtime returned " + resp.Status})
+		return
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "unknown", "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
 func (h *Handler) listIndexes(w http.ResponseWriter, r *http.Request) {
-	byIndex := h.indexConfigSummaries(r.Context())
+	indexes := h.mergedIndexSummaries(r.Context())
+	pageItems, pagination := paginateList(indexes, r)
+	writeJSON(w, http.StatusOK, map[string]any{"indexes": pageItems, "pagination": pagination})
+}
+
+func (h *Handler) mergedIndexSummaries(ctx context.Context) []IndexSummary {
+	byIndex := h.indexConfigSummaries(ctx)
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
-		items, err := h.clickhouse.ListIndexes(r.Context())
+		items, err := h.clickhouse.ListIndexes(ctx)
 		if err == nil {
 			for _, item := range items {
-				current := byIndex[item.IndexName]
+				current, configured := byIndex[item.IndexName]
+				if !configured && !ch.IsSystemIndexName(item.IndexName) && item.Rows == 0 {
+					continue
+				}
 				ttl := current.TTLDays
 				if ttl <= 0 {
 					ttl = item.TTLDays
@@ -870,16 +940,14 @@ func (h *Handler) listIndexes(w http.ResponseWriter, r *http.Request) {
 				current.LatestEventTime = item.LatestEventTime
 				current.StorageBytes = item.StorageBytes
 				current.TTLDays = ttl
+				current.PhysicalTTLDays = item.PhysicalTTLDays
 				current.Storage = "clickhouse"
 				if current.Status == "" {
 					current.Status = "active"
 				}
 				byIndex[item.IndexName] = current
 			}
-			indexes := sortedIndexSummaries(byIndex)
-			pageItems, pagination := paginateList(indexes, r)
-			writeJSON(w, http.StatusOK, map[string]any{"indexes": pageItems, "pagination": pagination})
-			return
+			return sortedIndexSummaries(byIndex)
 		}
 		h.logger.Warn("list clickhouse indexes failed, falling back to memory", "error", err)
 	}
@@ -905,23 +973,37 @@ func (h *Handler) listIndexes(w http.ResponseWriter, r *http.Request) {
 		current.LatestEventTime = latest
 		current.StorageBytes = uint64(item.StorageBytes)
 		current.TTLDays = ttl
+		current.PhysicalTTLDays = ttl
 		current.Storage = "memory"
 		if current.Status == "" {
 			current.Status = "active"
 		}
 		byIndex[item.IndexName] = current
 	}
-	indexes := sortedIndexSummaries(byIndex)
-	pageItems, pagination := paginateList(indexes, r)
-	writeJSON(w, http.StatusOK, map[string]any{"indexes": pageItems, "pagination": pagination})
+	return sortedIndexSummaries(byIndex)
 }
 
 func (h *Handler) saveIndex(w http.ResponseWriter, r *http.Request) {
+	h.saveIndexConfig(w, r, "")
+}
+
+func (h *Handler) updateIndex(w http.ResponseWriter, r *http.Request) {
+	h.saveIndexConfig(w, r, strings.TrimSpace(r.PathValue("index_name")))
+}
+
+func (h *Handler) saveIndexConfig(w http.ResponseWriter, r *http.Request, pathIndex string) {
 	defer r.Body.Close()
 	var req IndexConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid index json")
 		return
+	}
+	if pathIndex != "" {
+		if strings.TrimSpace(req.IndexName) != "" && strings.TrimSpace(req.IndexName) != pathIndex {
+			writeErrorCode(w, http.StatusBadRequest, "VALIDATION_ERROR", "path index and body index_name must match")
+			return
+		}
+		req.IndexName = pathIndex
 	}
 	if strings.TrimSpace(req.IndexName) == "" {
 		writeErrorCode(w, http.StatusBadRequest, "VALIDATION_ERROR", "index_name is required")
@@ -966,12 +1048,13 @@ func (h *Handler) saveIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
-		if err := h.clickhouse.EnsureIndexTable(r.Context(), indexName); err != nil {
+		if err := h.clickhouse.UpdateIndexTTL(r.Context(), indexName, ttl); err != nil {
 			writeError(w, http.StatusBadGateway, "create clickhouse index table failed")
 			return
 		}
 		index.Storage = "clickhouse"
 		index.TableName = "events_" + indexName
+		index.PhysicalTTLDays = ttl
 	}
 	h.mu.Lock()
 	h.indexConfigs[indexKey(indexName)] = index
@@ -979,8 +1062,227 @@ func (h *Handler) saveIndex(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, index)
 }
 
+func (h *Handler) getIndex(w http.ResponseWriter, r *http.Request) {
+	indexName, ok := h.indexNameFromPath(w, r)
+	if !ok {
+		return
+	}
+	for _, item := range h.mergedIndexSummaries(r.Context()) {
+		if item.IndexName == indexName {
+			writeJSON(w, http.StatusOK, item)
+			return
+		}
+	}
+	writeErrorCode(w, http.StatusNotFound, "INDEX_NOT_FOUND", "index not found")
+}
+
+func (h *Handler) updateIndexTTL(w http.ResponseWriter, r *http.Request) {
+	indexName, ok := h.indexNameFromPath(w, r)
+	if !ok {
+		return
+	}
+	defer r.Body.Close()
+	var req IndexConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid index json")
+		return
+	}
+	if req.TTLDays <= 0 {
+		writeErrorCode(w, http.StatusBadRequest, "VALIDATION_ERROR", "ttl_days is required")
+		return
+	}
+	current := h.indexConfigSummaries(r.Context())[indexName]
+	if current.IndexName == "" {
+		current = IndexSummary{IndexName: indexName, Name: indexName, Status: "active", Configured: true}
+	}
+	current.TTLDays = req.TTLDays
+	if req.Status != "" {
+		current.Status = req.Status
+	}
+	if current.Status == "" {
+		current.Status = "active"
+	}
+	current.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if h.mysql != nil {
+		if err := h.mysql.UpsertIndexConfig(r.Context(), indexToStore(current)); err != nil {
+			writeError(w, http.StatusBadGateway, "save index failed")
+			return
+		}
+	}
+	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
+		if err := h.clickhouse.UpdateIndexTTL(r.Context(), indexName, req.TTLDays); err != nil {
+			writeError(w, http.StatusBadGateway, "update clickhouse ttl failed")
+			return
+		}
+		current.Storage = "clickhouse"
+		current.TableName = "events_" + indexName
+		current.PhysicalTTLDays = req.TTLDays
+	}
+	h.mu.Lock()
+	h.indexConfigs[indexKey(indexName)] = current
+	h.mu.Unlock()
+	writeJSON(w, http.StatusOK, current)
+}
+
+func (h *Handler) getIndexTrend(w http.ResponseWriter, r *http.Request) {
+	indexName, ok := h.indexNameFromPath(w, r)
+	if !ok {
+		return
+	}
+	if os.Getenv("XDP_OUTPUT") != "clickhouse" {
+		writeErrorCode(w, http.StatusNotImplemented, "CLICKHOUSE_REQUIRED", "index trend requires clickhouse output")
+		return
+	}
+	days := parseNonNegative(r.URL.Query().Get("days"), 7)
+	if h.mysql != nil {
+		since := time.Now().In(searchLocation).AddDate(0, 0, -days)
+		if snapshots, err := h.mysql.ListIndexStorageSnapshots(r.Context(), indexName, since); err == nil && len(snapshots) > 0 {
+			points := make([]IndexTrendPoint, 0, len(snapshots))
+			tableName := ""
+			latestEventTime := ""
+			for _, snapshot := range snapshots {
+				points = append(points, IndexTrendPoint{
+					Date:         snapshot.CapturedAt.In(searchLocation).Format("2006-01-02"),
+					Rows:         snapshot.Rows,
+					StorageBytes: snapshot.StorageBytes,
+				})
+				if snapshot.TableName != "" {
+					tableName = snapshot.TableName
+				}
+				if snapshot.LatestEventTime != "" {
+					latestEventTime = snapshot.LatestEventTime
+				}
+			}
+			writeJSON(w, http.StatusOK, indexTrendFromSnapshotPoints(indexName, tableName, points, latestEventTime, indexSnapshotRetentionDays()))
+			return
+		}
+	}
+	trend, err := h.clickhouse.IndexTrend(r.Context(), indexName, days)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "load index trend failed")
+		return
+	}
+	trend.SnapshotRetentionDays = indexSnapshotRetentionDays()
+	writeJSON(w, http.StatusOK, trend)
+}
+
+func (h *Handler) sampleIndexSnapshots(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("XDP_OUTPUT") != "clickhouse" {
+		writeErrorCode(w, http.StatusNotImplemented, "CLICKHOUSE_REQUIRED", "index snapshots require clickhouse output")
+		return
+	}
+	if h.mysql == nil {
+		writeErrorCode(w, http.StatusNotImplemented, "MYSQL_REQUIRED", "index snapshots require mysql metadata storage")
+		return
+	}
+	count, capturedAt, pruned, retentionDays, err := h.captureIndexSnapshots(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sampled":        count,
+		"captured_at":    capturedAt.Format(time.RFC3339),
+		"retention_days": retentionDays,
+		"pruned":         pruned,
+	})
+}
+
+func (h *Handler) captureIndexSnapshots(ctx context.Context) (int, time.Time, int64, int, error) {
+	items, err := h.clickhouse.ListIndexes(ctx)
+	if err != nil {
+		return 0, time.Time{}, 0, 0, fmt.Errorf("list clickhouse indexes failed")
+	}
+	capturedAt := time.Now().In(searchLocation)
+	snapshots := make([]mysqlstore.IndexStorageSnapshot, 0, len(items))
+	for _, item := range items {
+		snapshots = append(snapshots, mysqlstore.IndexStorageSnapshot{
+			IndexName:       item.IndexName,
+			TableName:       item.TableName,
+			Rows:            item.Rows,
+			StorageBytes:    item.StorageBytes,
+			LatestEventTime: item.LatestEventTime,
+			CapturedAt:      capturedAt,
+		})
+	}
+	if err := h.mysql.InsertIndexStorageSnapshots(ctx, snapshots); err != nil {
+		return 0, time.Time{}, 0, 0, fmt.Errorf("save index snapshots failed")
+	}
+	retentionDays := indexSnapshotRetentionDays()
+	pruned, err := h.mysql.PruneIndexStorageSnapshots(ctx, capturedAt.AddDate(0, 0, -retentionDays))
+	if err != nil {
+		h.logger.Warn("prune index snapshots failed", "error", err, "retention_days", retentionDays)
+		pruned = 0
+	}
+	return len(snapshots), capturedAt, pruned, retentionDays, nil
+}
+
+func (h *Handler) startIndexSnapshotSampler() {
+	if os.Getenv("XDP_OUTPUT") != "clickhouse" || h.mysql == nil {
+		return
+	}
+	seconds := parseNonNegative(os.Getenv("XDP_INDEX_SNAPSHOT_INTERVAL_SECONDS"), 300)
+	if seconds <= 0 {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			<-timer.C
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if _, _, _, _, err := h.captureIndexSnapshots(ctx); err != nil {
+				h.logger.Warn("capture index snapshots failed", "error", err)
+			}
+			cancel()
+			timer.Reset(time.Duration(seconds) * time.Second)
+		}
+	}()
+}
+
+func indexTrendFromSnapshotPoints(indexName, tableName string, points []IndexTrendPoint, latestEventTime string, retentionDays int) ch.IndexTrend {
+	var rowsGrowth int64
+	var storageGrowth int64
+	var currentRows uint64
+	var currentStorage uint64
+	if len(points) > 0 {
+		currentRows = points[len(points)-1].Rows
+		currentStorage = points[len(points)-1].StorageBytes
+		rowsGrowth = int64(points[len(points)-1].Rows) - int64(points[0].Rows)
+		storageGrowth = int64(points[len(points)-1].StorageBytes) - int64(points[0].StorageBytes)
+	}
+	return ch.IndexTrend{
+		IndexName:             indexName,
+		TableName:             tableName,
+		Points:                points,
+		CurrentRows:           currentRows,
+		CurrentStorageBytes:   currentStorage,
+		RowsGrowth7d:          rowsGrowth,
+		StorageGrowthBytes7d:  storageGrowth,
+		LatestEventTime:       latestEventTime,
+		Source:                "snapshot",
+		SnapshotRetentionDays: retentionDays,
+	}
+}
+
+func indexSnapshotRetentionDays() int {
+	days := parseNonNegative(os.Getenv("XDP_INDEX_SNAPSHOT_RETENTION_DAYS"), 90)
+	if days <= 0 {
+		return 90
+	}
+	return days
+}
+
 func (h *Handler) deleteIndex(w http.ResponseWriter, r *http.Request) {
 	rawIndex := strings.TrimSpace(r.URL.Query().Get("index"))
+	h.deleteIndexByName(w, r, rawIndex)
+}
+
+func (h *Handler) deleteIndexPath(w http.ResponseWriter, r *http.Request) {
+	h.deleteIndexByName(w, r, strings.TrimSpace(r.PathValue("index_name")))
+}
+
+func (h *Handler) deleteIndexByName(w http.ResponseWriter, r *http.Request, rawIndex string) {
 	if rawIndex == "" {
 		writeError(w, http.StatusBadRequest, "index is required")
 		return
@@ -1010,6 +1312,16 @@ func (h *Handler) deleteIndex(w http.ResponseWriter, r *http.Request) {
 	delete(h.indexConfigs, indexKey(indexName))
 	h.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "index_name": indexName})
+}
+
+func (h *Handler) indexNameFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	rawIndex := strings.TrimSpace(r.PathValue("index_name"))
+	indexName, err := ch.NormalizeIndexName(rawIndex)
+	if err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid index_name")
+		return "", false
+	}
+	return indexName, true
 }
 
 func (h *Handler) indexConfigSummaries(ctx context.Context) map[string]IndexSummary {
@@ -1067,6 +1379,7 @@ func (h *Handler) searchQueryFromRequest(w http.ResponseWriter, r *http.Request,
 		return SearchQuery{}, false
 	}
 	query := SearchQuery{Index: r.URL.Query().Get("index"), Keyword: r.URL.Query().Get("keyword"), Field: r.URL.Query().Get("field"), Value: r.URL.Query().Get("value"), StartTime: startTime, EndTime: endTime, Limit: limit, Offset: offset, Q: r.URL.Query().Get("q"), Earliest: earliest, Latest: latest}
+	query.NormalizeFieldFilters()
 	if strings.TrimSpace(query.Q) != "" {
 		parsed, err := splquery.Parse(query.Q)
 		if err != nil {
@@ -1089,11 +1402,11 @@ func (h *Handler) findEvents(ctx context.Context, query SearchQuery) ([]*event.E
 	var events []*event.Event
 	var err error
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
-		events, err = h.clickhouse.Search(ctx, ch.SearchQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, StartTime: query.StartTime, EndTime: query.EndTime, Limit: query.Limit, Offset: query.Offset, HotFields: h.hotFieldsForIndex(query.Index)})
+		events, err = h.clickhouse.Search(ctx, ch.SearchQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, FieldFilters: clickHouseFieldFilters(query.FieldFilters), StartTime: query.StartTime, EndTime: query.EndTime, Limit: query.Limit, Offset: query.Offset, HotFields: h.hotFieldsForIndex(query.Index)})
 		if err != nil {
 			h.logger.Warn("clickhouse search failed, falling back to memory", "error", err)
 		} else {
-			total, countErr := h.clickhouse.Count(ctx, ch.SearchQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, StartTime: query.StartTime, EndTime: query.EndTime, HotFields: h.hotFieldsForIndex(query.Index)})
+			total, countErr := h.clickhouse.Count(ctx, ch.SearchQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, FieldFilters: clickHouseFieldFilters(query.FieldFilters), StartTime: query.StartTime, EndTime: query.EndTime, HotFields: h.hotFieldsForIndex(query.Index)})
 			if countErr != nil {
 				h.logger.Warn("clickhouse count failed, falling back to returned count", "error", countErr)
 			} else {
@@ -1102,7 +1415,7 @@ func (h *Handler) findEvents(ctx context.Context, query SearchQuery) ([]*event.E
 		}
 	}
 	if events == nil {
-		memoryQuery := memoryoutput.SearchQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, StartTime: query.StartTime, EndTime: query.EndTime, Limit: query.Limit, Offset: query.Offset}
+		memoryQuery := memoryoutput.SearchQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, FieldFilters: memoryFieldFilters(query.FieldFilters), StartTime: query.StartTime, EndTime: query.EndTime, Limit: query.Limit, Offset: query.Offset}
 		events = memoryoutput.DefaultStore().Search(memoryQuery)
 		pagination.Total = memoryoutput.DefaultStore().Count(memoryQuery)
 	}
@@ -1182,6 +1495,10 @@ func paginateStatsRows(rows []map[string]any, query SearchQuery) ([]map[string]a
 	}
 	pagination.Returned = len(rows)
 	return rows, pagination
+}
+
+func paginateTableRows(rows []map[string]any, query SearchQuery) ([]map[string]any, Pagination) {
+	return paginateStatsRows(rows, query)
 }
 
 func (h *Handler) searchFields(w http.ResponseWriter, r *http.Request) {
@@ -1284,14 +1601,14 @@ func (h *Handler) searchTimeline(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) timelineCounts(ctx context.Context, query SearchQuery, interval string) (map[time.Time]int, error) {
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
-		buckets, err := h.clickhouse.Timeline(ctx, ch.TimelineQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, StartTime: query.StartTime, EndTime: query.EndTime, Interval: interval, HotFields: h.hotFieldsForIndex(query.Index)})
+		buckets, err := h.clickhouse.Timeline(ctx, ch.TimelineQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, FieldFilters: clickHouseFieldFilters(query.FieldFilters), StartTime: query.StartTime, EndTime: query.EndTime, Interval: interval, HotFields: h.hotFieldsForIndex(query.Index)})
 		if err != nil {
 			h.logger.Warn("clickhouse timeline failed, falling back to memory", "error", err)
 		} else {
 			return timelineCountsFromClickHouse(buckets), nil
 		}
 	}
-	buckets := memoryoutput.DefaultStore().Timeline(memoryoutput.TimelineQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, StartTime: query.StartTime, EndTime: query.EndTime, Interval: interval, Location: searchLocation})
+	buckets := memoryoutput.DefaultStore().Timeline(memoryoutput.TimelineQuery{Index: query.Index, Keyword: query.Keyword, Field: query.Field, Value: query.Value, FieldFilters: memoryFieldFilters(query.FieldFilters), StartTime: query.StartTime, EndTime: query.EndTime, Interval: interval, Location: searchLocation})
 	counts := map[time.Time]int{}
 	for _, bucket := range buckets {
 		counts[bucket.Start.In(searchLocation)] = bucket.Count

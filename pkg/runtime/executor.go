@@ -147,6 +147,7 @@ func (e *Executor) executeParserGroup(ctx context.Context, spec pipeline.Pipelin
 				clearParseMissMetadata(ev)
 				continue
 			}
+			applyParserRuleOutputIndex(ev, stage)
 			return ev, false, err
 		}
 		applyParserRuleOutputIndex(ev, stage)
@@ -181,7 +182,7 @@ func applyParserRuleOutputIndex(ev *event.Event, stage pipeline.StageSpec) {
 
 func isParseMiss(err error) bool {
 	var pluginErr *plugin.PluginError
-	return errors.As(err, &pluginErr) && pluginErr.Code == plugin.ErrParseFailed
+	return errors.As(err, &pluginErr) && pluginErr.Code == plugin.ErrNoMatch
 }
 
 func clearParseMissMetadata(ev *event.Event) {

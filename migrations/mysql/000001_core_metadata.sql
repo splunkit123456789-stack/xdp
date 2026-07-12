@@ -79,12 +79,14 @@ CREATE TABLE plugin_versions (
     input_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     output_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     permission_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    runtime_config JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    package_bytes LONGBLOB NULL,
     checksum VARCHAR(128) NULL,
     signature VARCHAR(255) NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    UNIQUE KEY uk_plugin_versions_plugin_version (plugin_id, version),
+    UNIQUE KEY uk_plugin_versions_plugin (plugin_id),
     CONSTRAINT fk_plugin_versions_plugin FOREIGN KEY (plugin_id) REFERENCES plugins(id)
 );
 
@@ -129,6 +131,19 @@ CREATE TABLE indexes (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     deleted_at DATETIME(3) NULL,
     UNIQUE KEY uk_indexes_code (code)
+);
+
+CREATE TABLE index_storage_snapshots (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    index_name VARCHAR(128) NOT NULL,
+    table_name VARCHAR(255) NOT NULL,
+    row_count BIGINT NOT NULL DEFAULT 0,
+    storage_bytes BIGINT NOT NULL DEFAULT 0,
+    latest_event_time DATETIME(3) NULL,
+    captured_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    KEY idx_index_storage_snapshots_name_time (index_name, captured_at),
+    KEY idx_index_storage_snapshots_table_time (table_name, captured_at)
 );
 
 CREATE TABLE parser_plugins (

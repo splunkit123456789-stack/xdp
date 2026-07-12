@@ -63,13 +63,11 @@ func (p *Parser) Process(ctx plugin.ProcessContext, e *event.Event) (*event.Even
 	if e.Metadata == nil {
 		e.Metadata = map[string]any{}
 	}
-	setParseRuleMetadata(e, p.sourcetype, p.ruleID)
 	matches := p.pattern.FindStringSubmatch(e.Raw)
 	if matches == nil {
-		parseErr := plugin.NewError(plugin.ErrParseFailed, "regex did not match", false, nil)
-		markParseFailed(e, ctx, parseErr)
-		return e, parseErr
+		return e, plugin.NewError(plugin.ErrNoMatch, "regex did not match", false, nil)
 	}
+	setParseRuleMetadata(e, p.sourcetype, p.ruleID)
 	for i, name := range p.pattern.SubexpNames() {
 		if i == 0 || name == "" {
 			continue

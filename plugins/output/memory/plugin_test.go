@@ -1,14 +1,41 @@
 package memory
 
 import (
-	"context"
 	"testing"
 	"time"
 
+	"context"
 	"xdp/pkg/event"
+
 	"xdp/pkg/plugin"
 	"xdp/pkg/search/splstats"
 )
+
+func TestStoreSearchMatchesMultipleFieldFilters(t *testing.T) {
+	store := NewStore()
+	matched := event.New("json checkout", event.Source{Name: "Kafka JSON"}, time.Now())
+	matched.Metadata["index"] = "json_p1"
+	matched.Metadata["parse_status"] = "parsed"
+	matched.Fields["service"] = "checkout"
+	store.Append(matched)
+
+	other := event.New("json checkout", event.Source{Name: "Kafka JSON"}, time.Now())
+	other.Metadata["index"] = "json_p1"
+	other.Metadata["parse_status"] = "unparsed"
+	other.Fields["service"] = "checkout"
+	store.Append(other)
+
+	results := store.Search(SearchQuery{
+		Index: "json_p1",
+		FieldFilters: []FieldFilter{
+			{Field: "service", Value: "checkout"},
+			{Field: "parse_status", Value: "parsed"},
+		},
+	})
+	if len(results) != 1 || results[0] != matched {
+		t.Fatalf("results = %#v, want only matched event", results)
+	}
+}
 
 func TestStoreStatsCountByField(t *testing.T) {
 	store := NewStore()

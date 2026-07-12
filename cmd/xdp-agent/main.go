@@ -20,6 +20,7 @@ import (
 	"xdp/pkg/event"
 	"xdp/pkg/eventtime"
 	"xdp/pkg/plugin"
+	kafkainput "xdp/plugins/input/kafka"
 	sysloginput "xdp/plugins/input/syslog"
 )
 
@@ -34,11 +35,14 @@ func main() {
 	reloadInterval := durationEnv("XDP_CONFIG_RELOAD_INTERVAL", 5*time.Second)
 	router := newTopicRouter()
 	reg := plugin.NewRegistry()
+	must(kafkainput.Register(reg))
 	must(sysloginput.Register(reg))
 	listeners := newSyslogListenerManager(reg, producer)
+	consumers := newKafkaConsumerManager(reg, producer)
 	if configAPI != "" {
 		go router.reloadLoop(ctx, configAPI, configToken, reloadInterval)
 		go listeners.reconcileLoop(ctx, router, reloadInterval)
+		go consumers.reconcileLoop(ctx, router, reloadInterval)
 	} else {
 		runInput(ctx, reg, plugin.TypeInput, "syslog", "1.0.0", map[string]any{
 			"addr":     env("XDP_SYSLOG_ADDR", ":5514"),
@@ -303,10 +307,103 @@ func (m *syslogListenerManager) stopAll() {
 	}
 }
 
+type kafkaConsumerManager struct {
+	reg      *plugin.Registry
+	producer *kafka.Kafka
+	mu       sync.Mutex
+	running  map[string]runningKafkaConsumer
+}
+
+type runningKafkaConsumer struct {
+	spec   kafkaSpec
+	cancel context.CancelFunc
+}
+
+func newKafkaConsumerManager(reg *plugin.Registry, producer *kafka.Kafka) *kafkaConsumerManager {
+	return &kafkaConsumerManager{reg: reg, producer: producer, running: map[string]runningKafkaConsumer{}}
+}
+
+func (m *kafkaConsumerManager) reconcileLoop(ctx context.Context, router *topicRouter, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		m.reconcile(ctx, router.kafkaSpecs())
+		select {
+		case <-ctx.Done():
+			m.stopAll()
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *kafkaConsumerManager) reconcile(ctx context.Context, desired map[string]kafkaSpec) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, current := range m.running {
+		next, ok := desired[id]
+		if !ok || !next.equal(current.spec) {
+			current.cancel()
+			delete(m.running, id)
+		}
+	}
+	for id, spec := range desired {
+		if _, ok := m.running[id]; ok {
+			continue
+		}
+		consumerCtx, cancel := context.WithCancel(ctx)
+		m.running[id] = runningKafkaConsumer{spec: spec, cancel: cancel}
+		go m.run(consumerCtx, spec)
+	}
+}
+
+func (m *kafkaConsumerManager) run(ctx context.Context, spec kafkaSpec) {
+	factory, _, err := m.reg.Get(plugin.TypeInput, "kafka", "1.0.0")
+	if err != nil {
+		slog.Warn("kafka consumer plugin unavailable", "datasource", spec.ID, "error", err)
+		return
+	}
+	input, ok := factory().(plugin.InputPlugin)
+	if !ok {
+		slog.Warn("kafka consumer factory returned non-input", "datasource", spec.ID)
+		return
+	}
+	if err := input.Init(plugin.BasicInitContext{Ctx: ctx, Code: "kafka", Version: "1.0.0"}, spec.config()); err != nil {
+		slog.Warn("kafka consumer init failed", "datasource", spec.ID, "error", err)
+		return
+	}
+	emit := func(ctx context.Context, e *event.Event) error {
+		data, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if err := m.producer.Produce(ctx, kafka.Message{Topic: spec.InternalRawTopic, Key: e.EventID, Value: data}); err != nil {
+			slog.Warn("kafka input emit failed", "datasource", spec.ID, "raw_topic", spec.InternalRawTopic, "event_id", e.EventID, "error", err)
+			return err
+		}
+		slog.Info("kafka input emitted", "datasource", spec.ID, "raw_topic", spec.InternalRawTopic, "event_id", e.EventID, "bytes", len(data))
+		return nil
+	}
+	slog.Info("kafka consumer started", "datasource", spec.ID, "topic", spec.Topic, "raw_topic", spec.InternalRawTopic)
+	if err := input.Start(ctx, emit); err != nil {
+		slog.Warn("kafka consumer stopped", "datasource", spec.ID, "error", err)
+	}
+}
+
+func (m *kafkaConsumerManager) stopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, current := range m.running {
+		current.cancel()
+		delete(m.running, id)
+	}
+}
+
 type topicRouter struct {
 	mu     sync.RWMutex
 	topics map[string]string
 	syslog map[string]syslogSpec
+	kafka  map[string]kafkaSpec
 }
 
 type dataSourcesResponse struct {
@@ -324,7 +421,7 @@ type agentDataSource struct {
 }
 
 func newTopicRouter() *topicRouter {
-	return &topicRouter{topics: map[string]string{}, syslog: map[string]syslogSpec{}}
+	return &topicRouter{topics: map[string]string{}, syslog: map[string]syslogSpec{}, kafka: map[string]kafkaSpec{}}
 }
 
 func (r *topicRouter) topic(source string) string {
@@ -364,6 +461,30 @@ func (r *topicRouter) syslogSpecs() map[string]syslogSpec {
 	defer r.mu.RUnlock()
 	out := make(map[string]syslogSpec, len(r.syslog))
 	for id, spec := range r.syslog {
+		out[id] = spec
+	}
+	return out
+}
+
+type kafkaSpec struct {
+	ID               string
+	Name             string
+	Brokers          []string
+	Topic            string
+	ConsumerGroup    string
+	StartOffset      string
+	SecurityProtocol string
+	Encoding         string
+	LogFilterEnabled bool
+	LogFilterRegex   string
+	InternalRawTopic string
+}
+
+func (r *topicRouter) kafkaSpecs() map[string]kafkaSpec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]kafkaSpec, len(r.kafka))
+	for id, spec := range r.kafka {
 		out[id] = spec
 	}
 	return out
@@ -412,6 +533,7 @@ func (r *topicRouter) reload(ctx context.Context, configAPI string, configToken 
 	}
 	next := map[string]string{}
 	nextSyslog := map[string]syslogSpec{}
+	nextKafka := map[string]kafkaSpec{}
 	for _, source := range body.DataSources {
 		if source.Status != "" && source.Status != "active" {
 			continue
@@ -427,10 +549,17 @@ func (r *topicRouter) reload(ctx context.Context, configAPI string, configToken 
 				nextSyslog[spec.ID] = spec
 			}
 		}
+		if source.collectPluginCode() == "kafka" {
+			spec := source.kafkaSpec(topic)
+			if spec.ID != "" {
+				nextKafka[spec.ID] = spec
+			}
+		}
 	}
 	r.mu.Lock()
 	r.topics = next
 	r.syslog = nextSyslog
+	r.kafka = nextKafka
 	r.mu.Unlock()
 	return nil
 }
@@ -466,6 +595,63 @@ func (s agentDataSource) syslogSpec(topic string) syslogSpec {
 		Protocol: protocol,
 		Topic:    topic,
 	}
+}
+
+func (s agentDataSource) kafkaSpec(topic string) kafkaSpec {
+	id := strings.TrimSpace(s.ID)
+	if id == "" {
+		id = strings.TrimSpace(s.Name)
+	}
+	if id == "" {
+		return kafkaSpec{}
+	}
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		name = id
+	}
+	return kafkaSpec{
+		ID:               id,
+		Name:             name,
+		Brokers:          stringSliceFromConfig(s.PluginConfig, "brokers"),
+		Topic:            stringFromConfig(s.PluginConfig, "topic", ""),
+		ConsumerGroup:    stringFromConfig(s.PluginConfig, "consumer_group", "xdp-agent"),
+		StartOffset:      stringFromConfig(s.PluginConfig, "start_offset", "earliest"),
+		SecurityProtocol: stringFromConfig(s.PluginConfig, "security_protocol", "PLAINTEXT"),
+		Encoding:         stringFromConfig(s.PluginConfig, "encoding", "UTF-8"),
+		LogFilterEnabled: boolFromConfig(s.PluginConfig, "log_filter_enabled", false),
+		LogFilterRegex:   stringFromConfig(s.PluginConfig, "log_filter_regex", ""),
+		InternalRawTopic: topic,
+	}
+}
+
+func (s kafkaSpec) config() map[string]any {
+	return map[string]any{
+		"brokers":            s.Brokers,
+		"topic":              s.Topic,
+		"consumer_group":     s.ConsumerGroup,
+		"start_offset":       s.StartOffset,
+		"security_protocol":  s.SecurityProtocol,
+		"encoding":           s.Encoding,
+		"log_filter_enabled": s.LogFilterEnabled,
+		"log_filter_regex":   s.LogFilterRegex,
+		"source_name":        s.Name,
+		"data_source_id":     s.ID,
+	}
+}
+
+func (s kafkaSpec) equal(other kafkaSpec) bool {
+	if s.ID != other.ID || s.Name != other.Name || s.Topic != other.Topic || s.ConsumerGroup != other.ConsumerGroup || s.StartOffset != other.StartOffset || s.SecurityProtocol != other.SecurityProtocol || s.Encoding != other.Encoding || s.LogFilterEnabled != other.LogFilterEnabled || s.LogFilterRegex != other.LogFilterRegex || s.InternalRawTopic != other.InternalRawTopic {
+		return false
+	}
+	if len(s.Brokers) != len(other.Brokers) {
+		return false
+	}
+	for i := range s.Brokers {
+		if s.Brokers[i] != other.Brokers[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func intFromConfig(config map[string]any, key string, fallback int) int {
@@ -507,6 +693,51 @@ func stringFromConfig(config map[string]any, key string, fallback string) string
 		return fallback
 	}
 	return text
+}
+
+func stringSliceFromConfig(config map[string]any, key string) []string {
+	if config == nil {
+		return nil
+	}
+	switch value := config[key].(type) {
+	case []string:
+		return compactStrings(value)
+	case []any:
+		items := make([]string, 0, len(value))
+		for _, item := range value {
+			items = append(items, fmt.Sprint(item))
+		}
+		return compactStrings(items)
+	case string:
+		return compactStrings(strings.Split(value, ","))
+	default:
+		return nil
+	}
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func boolFromConfig(config map[string]any, key string, fallback bool) bool {
+	if config == nil {
+		return fallback
+	}
+	switch value := config[key].(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true") || strings.EqualFold(strings.TrimSpace(value), "on")
+	default:
+		return fallback
+	}
 }
 
 func env(key, fallback string) string {

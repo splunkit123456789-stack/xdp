@@ -29,6 +29,143 @@ beforeEach(() => {
 });
 
 describe("XDP collection config API integration", () => {
+  it("loads the enabled input catalog when opening the collect page directly", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi.fn(async (url) => {
+      if (url === "/api/v1/auth") return jsonResponse(authStatus());
+      if (String(url).startsWith("/api/v1/datasources?")) return jsonResponse({ datasources: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (String(url).startsWith("/api/v1/indexes?")) return jsonResponse({ indexes: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (url === "/api/v1/parser-plugins") return jsonResponse({ plugins: [] });
+      if (String(url).startsWith("/api/v1/parse-rules?")) return jsonResponse({ parse_rules: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (url === "/api/v1/search/favorites") return jsonResponse({ saved_searches: [] });
+      if (url === "/api/v1/plugins/catalog?plugin_type=input&status=enabled") {
+        return jsonResponse({
+          plugins: [
+            { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "enabled", checksum: "builtin" },
+            { plugin_code: "kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Kafka", status: "enabled", checksum: "sha256:kafka", config_schema: { type: "object", properties: {} } }
+          ]
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[data-testid="show-input-form"]').trigger("click");
+    await flushPromises();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/v1/plugins/catalog?plugin_type=input&status=enabled",
+      expect.any(Object)
+    );
+    expect(global.fetch.mock.calls.some(([url]) => String(url).startsWith("/api/v1/plugins?"))).toBe(false);
+    expect(wrapper.get('[data-testid="input-plugin-kafka"]').text()).toContain("Kafka");
+  });
+
+  it("retries the input plugin catalog after a direct-load failure", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    let catalogAttempts = 0;
+    global.fetch = vi.fn(async (url) => {
+      if (url === "/api/v1/auth") return jsonResponse(authStatus());
+      if (String(url).startsWith("/api/v1/datasources?")) return jsonResponse({ datasources: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (String(url).startsWith("/api/v1/indexes?")) return jsonResponse({ indexes: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (url === "/api/v1/parser-plugins") return jsonResponse({ plugins: [] });
+      if (String(url).startsWith("/api/v1/parse-rules?")) return jsonResponse({ parse_rules: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (url === "/api/v1/search/favorites") return jsonResponse({ saved_searches: [] });
+      if (url === "/api/v1/plugins/catalog?plugin_type=input&status=enabled") {
+        catalogAttempts += 1;
+        if (catalogAttempts === 1) {
+          return jsonResponse({ error: { code: "PLUGIN_CATALOG_UNAVAILABLE", message: "采集插件目录加载失败" } }, 503);
+        }
+        return jsonResponse({
+          plugins: [
+            { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "enabled", checksum: "builtin" },
+            { plugin_code: "kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Kafka", status: "enabled", checksum: "sha256:kafka", config_schema: { type: "object", properties: {} } }
+          ]
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="input-plugin-catalog-error"]').text()).toContain("采集插件目录加载失败");
+    await wrapper.get('[data-testid="retry-input-plugin-catalog"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="show-input-form"]').trigger("click");
+    await flushPromises();
+
+    expect(catalogAttempts).toBe(2);
+    expect(wrapper.find('[data-testid="input-plugin-catalog-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="input-plugin-kafka"]').text()).toContain("Kafka");
+  });
+
+  it("locks the input plugin selection while editing an existing datasource", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi.fn(async (url) => {
+      if (url === "/api/v1/auth") return jsonResponse(authStatus());
+      if (String(url).startsWith("/api/v1/datasources?")) {
+        return jsonResponse({
+          datasources: [{
+            id: "syslog-1",
+            name: "Immutable Syslog",
+            plugin_code: "syslog",
+            status: "disabled",
+            plugin_config: {
+              collector_port: 5514,
+              transport_protocol: "UDP",
+              encoding: "UTF-8",
+              log_filter_enabled: false
+            }
+          }],
+          pagination: { page: 1, page_size: 10, total: 1, total_pages: 1 }
+        });
+      }
+      if (String(url).startsWith("/api/v1/indexes?")) return jsonResponse({ indexes: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (url === "/api/v1/parser-plugins") return jsonResponse({ plugins: [] });
+      if (String(url).startsWith("/api/v1/parse-rules?")) return jsonResponse({ parse_rules: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (url === "/api/v1/search/favorites") return jsonResponse({ saved_searches: [] });
+      if (url === "/api/v1/plugins?plugin_type=input&page=1&page_size=10") {
+        return jsonResponse({
+          plugins: [{ plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "enabled", checksum: "builtin" }],
+          pagination: { page: 1, page_size: 10, total: 2, total_pages: 1 },
+          type_counts: { input: 2, parser: 1, search_command: 1 }
+        });
+      }
+      if (url === "/api/v1/plugins/catalog?plugin_type=input&status=enabled") {
+        return jsonResponse({
+          plugins: [
+            { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "enabled", checksum: "builtin" },
+            { plugin_code: "kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Kafka", status: "enabled", checksum: "sha256:kafka", config_schema: { type: "object", properties: {} } }
+          ]
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="nav-collect"]').trigger("click");
+    await flushPromises();
+    const editButton = wrapper.findAll("button").find((button) => button.text() === "修改");
+    expect(editButton).toBeTruthy();
+    await editButton.trigger("click");
+    await flushPromises();
+
+    const syslog = wrapper.get('[data-testid="input-plugin-syslog"]');
+    const kafka = wrapper.get('[data-testid="input-plugin-kafka"]');
+    expect(syslog.attributes("disabled")).toBeDefined();
+    expect(kafka.attributes("disabled")).toBeDefined();
+    expect(syslog.classes()).toContain("active");
+
+    await kafka.trigger("click");
+    expect(syslog.classes()).toContain("active");
+    expect(kafka.classes()).not.toContain("active");
+  });
+
   it("shows collector listener ports in the collect datasource list", async () => {
     localStorage.setItem("xdp_api_token", "test-token");
     global.fetch = vi
@@ -107,7 +244,7 @@ describe("XDP collection config API integration", () => {
     expect(syslogOptions).not.toContain("TCP");
   });
 
-  it("blocks Kafka runtime collection configs in P0 before saving", async () => {
+  it("renders enabled Kafka plugin schema and saves runtime config", async () => {
     localStorage.setItem("xdp_api_token", "test-token");
     global.fetch = vi
       .fn()
@@ -116,7 +253,58 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
-      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }));
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [{
+          plugin_code: "kafka",
+          plugin_type: "input",
+          plugin_version: "1.0.0",
+          name: "Kafka Input",
+          runtime: "external",
+          status: "enabled",
+          checksum: "sha256:kafka-demo",
+          config_schema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled"],
+            properties: {
+              brokers: { type: "array", items: { type: "string" }, minItems: 1, title: "Broker 地址" },
+              topic: { type: "string", minLength: 1, title: "Topic" },
+              consumer_group: { type: "string", minLength: 1, title: "消费组" },
+              start_offset: { type: "string", enum: ["from_beginning", "from_tail"], title: "消费策略" },
+              security_protocol: { type: "string", enum: ["CUSTOM_PLAINTEXT", "CUSTOM_SSL"], title: "通信协议" },
+              encoding: { type: "string", enum: ["UTF-8", "GB18030"], title: "字符编码" },
+              log_filter_enabled: { type: "boolean", title: "日志筛选" },
+              log_filter_regex: { type: "string", title: "正则筛选", "x-required-if": { field: "log_filter_enabled", equals: true } }
+            }
+          },
+          ui_schema: { order: ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled", "log_filter_regex"] }
+        }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "kafka-stream-p1",
+        code: "kafka-stream-p1",
+        type: "kafka",
+        name: "Kafka Stream P1",
+        status: "active",
+        runtime_status: "running",
+        listener_status: "consuming",
+        listener_endpoint: "kafka://10.0.0.1:9092,10.0.0.2:9092/xdp-events",
+        plugin_code: "kafka",
+        plugin_runtime: "external",
+        internal_raw_topic: "raw.ds_kafka_stream_p1",
+        pipeline_id: "pipe_kafka_stream_p1",
+        plugin_config: {
+          brokers: ["10.0.0.1:9092", "10.0.0.2:9092"],
+          topic: "xdp-events",
+          consumer_group: "xdp-console",
+          start_offset: "from_beginning",
+          security_protocol: "CUSTOM_PLAINTEXT",
+          encoding: "UTF-8",
+          log_filter_enabled: true,
+          log_filter_regex: "action=(allow|deny)"
+        }
+      }));
 
     const wrapper = mount(App);
     await flushPromises();
@@ -124,14 +312,134 @@ describe("XDP collection config API integration", () => {
     await wrapper.get('[data-testid="input-plugin-kafka"]').trigger("click");
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="kafka-runtime-disabled"]').text()).toContain("P1");
     await wrapper.get('input[placeholder="请输入设备名称"]').setValue("Kafka Stream P1");
+    await wrapper.get('[data-testid="kafka-brokers"]').setValue("10.0.0.1:9092,10.0.0.2:9092");
+    await wrapper.get('[data-testid="kafka-topic"]').setValue("xdp-events");
+    await wrapper.get('[data-testid="kafka-consumer-group"]').setValue("xdp-console");
+    expect(wrapper.get('[data-testid="kafka-start-offset"]').text()).toContain("from_beginning");
+    expect(wrapper.get('[data-testid="kafka-security-protocol"]').text()).toContain("CUSTOM_PLAINTEXT");
+    await wrapper.get('[data-testid="kafka-start-offset"]').setValue("from_beginning");
+    await wrapper.get('[data-testid="kafka-security-protocol"]').setValue("CUSTOM_PLAINTEXT");
+    await wrapper.get('[data-testid="kafka-encoding"]').setValue("UTF-8");
+    await wrapper.get('[data-testid="kafka-log-filter-enabled"]').setValue("on");
+    await flushPromises();
+    await wrapper.get('[data-testid="kafka-log-filter-regex"]').setValue("action=(allow|deny)");
     await wrapper.get('[data-testid="collect-page"] form').trigger("submit");
     await flushPromises();
 
     const saveCall = global.fetch.mock.calls.find(([url, options]) => url === "/api/v1/datasources" && options?.method === "POST");
-    expect(saveCall).toBeFalsy();
-    expect(wrapper.get('[data-testid="input-form-error"]').text()).toContain("Kafka 采集插件运行时能力未启用");
+    expect(saveCall).toBeTruthy();
+    const body = JSON.parse(saveCall[1].body);
+    expect(body).toMatchObject({ name: "Kafka Stream P1", plugin_code: "kafka", status: "active" });
+    expect(body.plugin_config).toEqual({
+      brokers: ["10.0.0.1:9092", "10.0.0.2:9092"],
+      topic: "xdp-events",
+      consumer_group: "xdp-console",
+      start_offset: "from_beginning",
+      security_protocol: "CUSTOM_PLAINTEXT",
+      encoding: "UTF-8",
+      log_filter_enabled: true,
+      log_filter_regex: "action=(allow|deny)"
+    });
+    expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("Kafka 配置已保存，运行时消费将按状态热加载");
+  });
+
+  it("checks Kafka connectivity from the dynamic plugin form", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus()))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [{
+          plugin_code: "kafka",
+          plugin_type: "input",
+          plugin_version: "1.0.0",
+          name: "Kafka Input",
+          runtime: "external",
+          status: "enabled",
+          checksum: "sha256:kafka-demo",
+          config_schema: {
+            type: "object",
+            required: ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled"],
+            properties: {
+              brokers: { type: "array", items: { type: "string" }, minItems: 1, title: "Broker 地址" },
+              topic: { type: "string", minLength: 1, title: "Topic" },
+              consumer_group: { type: "string", minLength: 1, title: "消费组" },
+              start_offset: { type: "string", enum: ["earliest", "latest"], title: "消费策略" },
+              security_protocol: { type: "string", enum: ["PLAINTEXT"], title: "通信协议" },
+              encoding: { type: "string", enum: ["UTF-8"], title: "字符编码" },
+              log_filter_enabled: { type: "boolean", title: "日志筛选" }
+            }
+          },
+          ui_schema: { order: ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled"] }
+        }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({ available: true, plugin_code: "kafka", message: "Kafka 连通性正常" }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[data-testid="show-input-form"]').trigger("click");
+    await wrapper.get('[data-testid="input-plugin-kafka"]').trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="kafka-brokers"]').setValue("127.0.0.1:9092");
+    await wrapper.get('[data-testid="kafka-topic"]').setValue("xdp-events");
+    await wrapper.get('[data-testid="kafka-consumer-group"]').setValue("xdp-console");
+    await wrapper.get('[data-testid="kafka-connectivity-check"]').trigger("click");
+    await flushPromises();
+
+    const checkCall = global.fetch.mock.calls.find(([url, options]) => url === "/api/v1/datasources/connectivity-check" && options?.method === "POST");
+    expect(checkCall).toBeTruthy();
+    expect(JSON.parse(checkCall[1].body)).toMatchObject({
+      plugin_code: "kafka",
+      plugin_config: {
+        brokers: ["127.0.0.1:9092"],
+        topic: "xdp-events",
+        consumer_group: "xdp-console"
+      }
+    });
+    expect(wrapper.get('[data-testid="kafka-connectivity-status"]').text()).toContain("Kafka 连通性正常");
+  });
+
+  it("renders Kafka runtime as consuming and does not fall back to UDP listener port", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus()))
+      .mockResolvedValueOnce(jsonResponse({
+        datasources: [{
+          id: "kafka-stream-p1",
+          type: "kafka",
+          name: "Kafka Stream P1",
+          status: "active",
+          runtime_status: "running",
+          listener_status: "consuming",
+          listener_endpoint: "kafka://127.0.0.1:9092/xdp-events",
+          plugin_code: "kafka",
+          plugin_config: { brokers: ["127.0.0.1:9092"], topic: "xdp-events", consumer_group: "xdp-console", start_offset: "earliest", security_protocol: "PLAINTEXT", encoding: "UTF-8", log_filter_enabled: false }
+        }],
+        pagination: { page: 1, page_size: 10, total: 1, total_pages: 1 }
+      }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const row = wrapper.get('[data-testid="collect-row-kafka-stream-p1"]');
+    expect(row.text()).toContain("Kafka Stream P1");
+    expect(row.text()).toContain("Kafka");
+    expect(row.text()).toContain("kafka://127.0.0.1:9092/xdp-events");
+    expect(row.text()).toContain("运行中");
+    expect(row.text()).not.toContain("UDP:5514");
+    expect(row.text()).not.toContain("异常");
   });
 
   it("blocks incomplete Syslog required fields before checking port or saving", async () => {
@@ -144,6 +452,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ available: true, collector_port: 5514, transport_protocol: "UDP" }))
       .mockResolvedValueOnce(jsonResponse({ id: "bad-syslog", name: "Bad Syslog", plugin_code: "syslog", status: "active", plugin_config: {} }));
 
@@ -173,6 +482,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ available: true, collector_port: 5515, transport_protocol: "UDP" }))
       .mockResolvedValueOnce(jsonResponse({
         id: "firewall-syslog-p0",
@@ -240,6 +550,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ error: { code: "LISTENER_PORT_UNAVAILABLE", message: "端口不可用" } }, 409));
 
     const wrapper = mount(App);
@@ -314,6 +625,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ status: "deleted", id: "reusable-syslog" }))
       .mockResolvedValueOnce(jsonResponse({ available: true, collector_port: 5516, transport_protocol: "UDP" }))
       .mockResolvedValueOnce(jsonResponse({
@@ -392,6 +704,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({
         id: "running-syslog",
         name: "Running Syslog",
@@ -503,6 +816,7 @@ describe("XDP collection config API integration", () => {
           props_conf: "[source::firewall]"
         }]
       }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({
         id: "firewall-syslog",
         name: "Firewall Syslog",
@@ -551,6 +865,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({
         id: "unbound-syslog",
         name: "Unbound Syslog",
@@ -597,6 +912,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({
         id: "firewall-syslog-p0",
         type: "syslog",
@@ -650,6 +966,7 @@ describe("XDP collection config API integration", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({
         datasources: [{
           id: "syslog-11",

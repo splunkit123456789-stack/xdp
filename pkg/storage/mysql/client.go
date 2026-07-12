@@ -60,6 +60,15 @@ type IndexConfig struct {
 	UpdatedAt        time.Time
 }
 
+type IndexStorageSnapshot struct {
+	IndexName       string
+	TableName       string
+	Rows            uint64
+	StorageBytes    uint64
+	LatestEventTime string
+	CapturedAt      time.Time
+}
+
 type ParserPlugin struct {
 	PluginCode          string
 	PluginType          string
@@ -144,6 +153,31 @@ type PluginRecord struct {
 	InputSchema      json.RawMessage
 	OutputSchema     json.RawMessage
 	PermissionSchema json.RawMessage
+	RuntimeConfig    json.RawMessage
+	PackageBytes     []byte
+}
+
+type SearchCommandExecutionAudit struct {
+	RequestID      string
+	SearchID       string
+	PluginType     string
+	PluginCode     string
+	PluginVersion  string
+	CommandName    string
+	Runtime        string
+	Interpreter    string
+	TimeoutMS      int
+	MaxInputRows   int
+	MaxOutputBytes int
+	InputRows      int64
+	OutputRows     int64
+	ElapsedMS      int
+	Success        bool
+	ErrorCode      string
+	ErrorMessage   string
+	StdoutBytes    int64
+	StderrBytes    int64
+	CreatedAt      time.Time
 }
 
 func Open(cfg Config) (*Client, error) {
@@ -193,11 +227,11 @@ func (c *Client) UpsertPlugin(ctx context.Context, meta plugin.Metadata) error {
 	inputSchema, _ := json.Marshal(meta.InputSchema)
 	outputSchema, _ := json.Marshal(meta.OutputSchema)
 	permissionSchema, _ := json.Marshal(meta.PermissionSchema)
-	_, err := c.db.ExecContext(ctx, `INSERT INTO plugins (id, type, code, name, description, status) VALUES (UUID(), ?, ?, ?, ?, 'active') ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = 'active'`, string(meta.Type), meta.Code, meta.Name, meta.Description)
+	_, err := c.db.ExecContext(ctx, `INSERT INTO plugins (id, type, code, name, description, status) VALUES (UUID(), ?, ?, ?, ?, 'active') ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = 'active', deleted_at = NULL`, string(meta.Type), meta.Code, meta.Name, meta.Description)
 	if err != nil {
 		return err
 	}
-	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, config_schema, ui_schema, input_schema, output_schema, permission_schema, status) SELECT UUID(), id, ?, ?, ?, ?, ?, ?, ?, 'active' FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE runtime = VALUES(runtime), config_schema = VALUES(config_schema), ui_schema = VALUES(ui_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), status = 'active'`, meta.Version, meta.Runtime, string(configSchema), string(uiSchema), string(inputSchema), string(outputSchema), string(permissionSchema), string(meta.Type), meta.Code)
+	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, config_schema, ui_schema, input_schema, output_schema, permission_schema, status) SELECT UUID(), id, ?, ?, ?, ?, ?, ?, ?, 'active' FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE version = VALUES(version), runtime = VALUES(runtime), config_schema = VALUES(config_schema), ui_schema = VALUES(ui_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), status = 'active'`, meta.Version, meta.Runtime, string(configSchema), string(uiSchema), string(inputSchema), string(outputSchema), string(permissionSchema), string(meta.Type), meta.Code)
 	return err
 }
 
@@ -244,6 +278,9 @@ func (c *Client) UpsertPluginRecord(ctx context.Context, item PluginRecord) erro
 	if len(item.PermissionSchema) == 0 {
 		item.PermissionSchema = json.RawMessage(`{}`)
 	}
+	if len(item.RuntimeConfig) == 0 {
+		item.RuntimeConfig = json.RawMessage(`{}`)
+	}
 	if item.Runtime == "" {
 		item.Runtime = "go_builtin"
 	}
@@ -253,16 +290,16 @@ func (c *Client) UpsertPluginRecord(ctx context.Context, item PluginRecord) erro
 	if item.Name == "" {
 		item.Name = item.PluginCode
 	}
-	_, err := c.db.ExecContext(ctx, `INSERT INTO plugins (id, type, code, name, description, status) VALUES (UUID(), ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = VALUES(status)`, item.PluginType, item.PluginCode, item.Name, item.Description, item.Status)
+	_, err := c.db.ExecContext(ctx, `INSERT INTO plugins (id, type, code, name, description, status) VALUES (UUID(), ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), status = VALUES(status), deleted_at = NULL`, item.PluginType, item.PluginCode, item.Name, item.Description, item.Status)
 	if err != nil {
 		return err
 	}
-	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, entrypoint, config_schema, ui_schema, input_schema, output_schema, permission_schema, checksum, signature, status) SELECT UUID(), id, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ? FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE runtime = VALUES(runtime), entrypoint = VALUES(entrypoint), config_schema = VALUES(config_schema), ui_schema = VALUES(ui_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), checksum = VALUES(checksum), signature = VALUES(signature), status = VALUES(status)`, item.PluginVersion, item.Runtime, item.Entrypoint, string(item.ConfigSchema), string(item.UISchema), string(item.InputSchema), string(item.OutputSchema), string(item.PermissionSchema), item.Checksum, item.Signature, item.Status, item.PluginType, item.PluginCode)
+	_, err = c.db.ExecContext(ctx, `INSERT INTO plugin_versions (id, plugin_id, version, runtime, entrypoint, config_schema, ui_schema, input_schema, output_schema, permission_schema, runtime_config, package_bytes, checksum, signature, status) SELECT UUID(), id, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ? FROM plugins WHERE type = ? AND code = ? ON DUPLICATE KEY UPDATE version = VALUES(version), runtime = VALUES(runtime), entrypoint = VALUES(entrypoint), config_schema = VALUES(config_schema), ui_schema = VALUES(ui_schema), input_schema = VALUES(input_schema), output_schema = VALUES(output_schema), permission_schema = VALUES(permission_schema), runtime_config = VALUES(runtime_config), package_bytes = VALUES(package_bytes), checksum = VALUES(checksum), signature = VALUES(signature), status = VALUES(status)`, item.PluginVersion, item.Runtime, item.Entrypoint, string(item.ConfigSchema), string(item.UISchema), string(item.InputSchema), string(item.OutputSchema), string(item.PermissionSchema), string(item.RuntimeConfig), item.PackageBytes, item.Checksum, item.Signature, item.Status, item.PluginType, item.PluginCode)
 	return err
 }
 
 func (c *Client) ListPluginRecords(ctx context.Context) ([]PluginRecord, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT p.type, p.code, p.name, COALESCE(p.description, ''), p.status, pv.version, pv.runtime, COALESCE(pv.entrypoint, ''), pv.config_schema, pv.ui_schema, pv.input_schema, pv.output_schema, pv.permission_schema, COALESCE(pv.checksum, ''), COALESCE(pv.signature, ''), pv.status FROM plugins p JOIN plugin_versions pv ON pv.plugin_id = p.id WHERE p.deleted_at IS NULL ORDER BY p.type, p.code, pv.version`)
+	rows, err := c.db.QueryContext(ctx, `SELECT p.type, p.code, p.name, COALESCE(p.description, ''), p.status, pv.version, pv.runtime, COALESCE(pv.entrypoint, ''), pv.config_schema, pv.ui_schema, pv.input_schema, pv.output_schema, pv.permission_schema, COALESCE(pv.runtime_config, JSON_OBJECT()), COALESCE(pv.package_bytes, ''), COALESCE(pv.checksum, ''), COALESCE(pv.signature, ''), pv.status FROM plugins p JOIN plugin_versions pv ON pv.plugin_id = p.id WHERE p.deleted_at IS NULL ORDER BY p.type, p.code, pv.version`)
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +307,130 @@ func (c *Client) ListPluginRecords(ctx context.Context) ([]PluginRecord, error) 
 	items := []PluginRecord{}
 	for rows.Next() {
 		var item PluginRecord
-		if err := rows.Scan(&item.PluginType, &item.PluginCode, &item.Name, &item.Description, &item.Status, &item.PluginVersion, &item.Runtime, &item.Entrypoint, &item.ConfigSchema, &item.UISchema, &item.InputSchema, &item.OutputSchema, &item.PermissionSchema, &item.Checksum, &item.Signature, &item.Status); err != nil {
+		if err := rows.Scan(&item.PluginType, &item.PluginCode, &item.Name, &item.Description, &item.Status, &item.PluginVersion, &item.Runtime, &item.Entrypoint, &item.ConfigSchema, &item.UISchema, &item.InputSchema, &item.OutputSchema, &item.PermissionSchema, &item.RuntimeConfig, &item.PackageBytes, &item.Checksum, &item.Signature, &item.Status); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (c *Client) GetPluginRecord(ctx context.Context, pluginType string, pluginCode string, version string) (PluginRecord, error) {
+	query := `SELECT p.type, p.code, p.name, COALESCE(p.description, ''), p.status, pv.version, pv.runtime, COALESCE(pv.entrypoint, ''), pv.config_schema, pv.ui_schema, pv.input_schema, pv.output_schema, pv.permission_schema, COALESCE(pv.runtime_config, JSON_OBJECT()), COALESCE(pv.package_bytes, ''), COALESCE(pv.checksum, ''), COALESCE(pv.signature, ''), pv.status
+FROM plugins p
+JOIN plugin_versions pv ON pv.plugin_id = p.id
+WHERE p.deleted_at IS NULL AND p.type = ? AND p.code = ?`
+	args := []any{pluginType, pluginCode}
+	query += ` ORDER BY CASE WHEN pv.status IN ('enabled', 'active') THEN 0 ELSE 1 END, pv.version DESC LIMIT 1`
+	row := c.db.QueryRowContext(ctx, query, args...)
+	var item PluginRecord
+	if err := row.Scan(&item.PluginType, &item.PluginCode, &item.Name, &item.Description, &item.Status, &item.PluginVersion, &item.Runtime, &item.Entrypoint, &item.ConfigSchema, &item.UISchema, &item.InputSchema, &item.OutputSchema, &item.PermissionSchema, &item.RuntimeConfig, &item.PackageBytes, &item.Checksum, &item.Signature, &item.Status); err != nil {
+		return PluginRecord{}, err
+	}
+	return item, nil
+}
+
+func (c *Client) SetPluginStatus(ctx context.Context, pluginType string, pluginCode string, status string) (PluginRecord, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE plugin_versions pv JOIN plugins p ON pv.plugin_id = p.id SET pv.status = ? WHERE p.type = ? AND p.code = ?`, status, pluginType, pluginCode)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return PluginRecord{}, sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE plugins SET status = ? WHERE type = ? AND code = ?`, status, pluginType, pluginCode); err != nil {
+		return PluginRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PluginRecord{}, err
+	}
+	return c.GetPluginRecord(ctx, pluginType, pluginCode, "")
+}
+
+func (c *Client) SaveSearchCommandExecutionAudit(ctx context.Context, item SearchCommandExecutionAudit) error {
+	if c == nil || c.db == nil {
+		return nil
+	}
+	if item.PluginType == "" {
+		item.PluginType = "search_command"
+	}
+	if item.RequestID == "" {
+		item.RequestID = fmt.Sprintf("req_%d", time.Now().UnixNano())
+	}
+	_, err := c.db.ExecContext(ctx, `INSERT INTO search_command_execution_audits (id, request_id, search_id, plugin_type, plugin_code, plugin_version, command_name, runtime, interpreter, timeout_ms, max_input_rows, max_output_bytes, input_rows, output_rows, elapsed_ms, success, error_code, error_message, stdout_bytes, stderr_bytes) VALUES (UUID(), ?, NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)`,
+		item.RequestID,
+		item.SearchID,
+		item.PluginType,
+		item.PluginCode,
+		item.PluginVersion,
+		item.CommandName,
+		item.Runtime,
+		item.Interpreter,
+		item.TimeoutMS,
+		item.MaxInputRows,
+		item.MaxOutputBytes,
+		item.InputRows,
+		item.OutputRows,
+		item.ElapsedMS,
+		item.Success,
+		item.ErrorCode,
+		item.ErrorMessage,
+		item.StdoutBytes,
+		item.StderrBytes,
+	)
+	return err
+}
+
+func (c *Client) ListSearchCommandExecutionAudits(ctx context.Context, pluginCode string, limit int) ([]SearchCommandExecutionAudit, error) {
+	if c == nil || c.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := c.db.QueryContext(ctx, `SELECT request_id, COALESCE(search_id, ''), plugin_type, plugin_code, plugin_version, command_name, runtime, COALESCE(interpreter, ''), timeout_ms, max_input_rows, max_output_bytes, input_rows, output_rows, elapsed_ms, success, COALESCE(error_code, ''), COALESCE(error_message, ''), stdout_bytes, stderr_bytes, created_at FROM search_command_execution_audits WHERE plugin_type = 'search_command' AND plugin_code = ? ORDER BY created_at DESC LIMIT ?`, pluginCode, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchCommandExecutionAudit{}
+	for rows.Next() {
+		var item SearchCommandExecutionAudit
+		if err := rows.Scan(&item.RequestID, &item.SearchID, &item.PluginType, &item.PluginCode, &item.PluginVersion, &item.CommandName, &item.Runtime, &item.Interpreter, &item.TimeoutMS, &item.MaxInputRows, &item.MaxOutputBytes, &item.InputRows, &item.OutputRows, &item.ElapsedMS, &item.Success, &item.ErrorCode, &item.ErrorMessage, &item.StdoutBytes, &item.StderrBytes, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (c *Client) DeletePlugin(ctx context.Context, pluginType string, pluginCode string) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `DELETE pv FROM plugin_versions pv JOIN plugins p ON pv.plugin_id = p.id WHERE p.type = ? AND p.code = ? AND pv.status NOT IN ('enabled', 'active')`, pluginType, pluginCode)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugins WHERE type = ? AND code = ? AND status NOT IN ('enabled', 'active')`, pluginType, pluginCode); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (c *Client) SavePipeline(ctx context.Context, pipe pipeline.Pipeline) error {
@@ -503,6 +658,61 @@ func (c *Client) ListIndexConfigs(ctx context.Context) ([]IndexConfig, error) {
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (c *Client) InsertIndexStorageSnapshots(ctx context.Context, items []IndexStorageSnapshot) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO index_storage_snapshots (id, index_name, table_name, row_count, storage_bytes, latest_event_time, captured_at) VALUES (UUID(), ?, ?, ?, ?, NULLIF(?, ''), ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, item := range items {
+		capturedAt := item.CapturedAt
+		if capturedAt.IsZero() {
+			capturedAt = time.Now()
+		}
+		if _, err := stmt.ExecContext(ctx, item.IndexName, item.TableName, item.Rows, item.StorageBytes, item.LatestEventTime, capturedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (c *Client) ListIndexStorageSnapshots(ctx context.Context, indexName string, since time.Time) ([]IndexStorageSnapshot, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT index_name, table_name, row_count, storage_bytes, COALESCE(DATE_FORMAT(latest_event_time, '%Y-%m-%d %H:%i:%s'), ''), captured_at FROM index_storage_snapshots WHERE index_name = ? AND captured_at >= ? ORDER BY captured_at ASC`, indexName, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IndexStorageSnapshot{}
+	for rows.Next() {
+		var item IndexStorageSnapshot
+		if err := rows.Scan(&item.IndexName, &item.TableName, &item.Rows, &item.StorageBytes, &item.LatestEventTime, &item.CapturedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (c *Client) PruneIndexStorageSnapshots(ctx context.Context, before time.Time) (int64, error) {
+	result, err := c.db.ExecContext(ctx, `DELETE FROM index_storage_snapshots WHERE captured_at < ?`, before)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 func (c *Client) SeedParserPlugins(ctx context.Context, items []ParserPlugin) error {
@@ -897,14 +1107,42 @@ CREATE TABLE IF NOT EXISTS plugin_versions (
     ui_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     input_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
     output_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
-    permission_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
-    checksum VARCHAR(128) NULL,
+	    permission_schema JSON NOT NULL DEFAULT (JSON_OBJECT()),
+	    runtime_config JSON NOT NULL DEFAULT (JSON_OBJECT()),
+	    package_bytes LONGBLOB NULL,
+	    checksum VARCHAR(128) NULL,
     signature VARCHAR(255) NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    UNIQUE KEY uk_plugin_versions_plugin_version (plugin_id, version),
+    UNIQUE KEY uk_plugin_versions_plugin (plugin_id),
     CONSTRAINT fk_plugin_versions_plugin FOREIGN KEY (plugin_id) REFERENCES plugins(id)
+);
+CREATE TABLE IF NOT EXISTS search_command_execution_audits (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    request_id VARCHAR(128) NOT NULL,
+    search_id VARCHAR(128) NULL,
+    plugin_type VARCHAR(32) NOT NULL DEFAULT 'search_command',
+    plugin_code VARCHAR(128) NOT NULL,
+    plugin_version VARCHAR(64) NOT NULL,
+    command_name VARCHAR(128) NOT NULL,
+    runtime VARCHAR(64) NOT NULL,
+    interpreter VARCHAR(64) NULL,
+    timeout_ms INT NOT NULL DEFAULT 5000,
+    max_input_rows INT NOT NULL DEFAULT 10000,
+    max_output_bytes INT NOT NULL DEFAULT 4194304,
+    input_rows BIGINT NOT NULL DEFAULT 0,
+    output_rows BIGINT NOT NULL DEFAULT 0,
+    elapsed_ms INT NOT NULL DEFAULT 0,
+    success TINYINT(1) NOT NULL DEFAULT 0,
+    error_code VARCHAR(64) NULL,
+    error_message TEXT NULL,
+    stdout_bytes BIGINT NOT NULL DEFAULT 0,
+    stderr_bytes BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    KEY idx_search_command_audit_plugin_time (plugin_code, created_at),
+    KEY idx_search_command_audit_request (request_id),
+    KEY idx_search_command_audit_success_time (success, created_at)
 );
 CREATE TABLE IF NOT EXISTS pipelines (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -945,6 +1183,18 @@ CREATE TABLE IF NOT EXISTS indexes (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     deleted_at DATETIME(3) NULL,
     UNIQUE KEY uk_indexes_code (code)
+);
+CREATE TABLE IF NOT EXISTS index_storage_snapshots (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    index_name VARCHAR(128) NOT NULL,
+    table_name VARCHAR(255) NOT NULL,
+    row_count BIGINT NOT NULL DEFAULT 0,
+    storage_bytes BIGINT NOT NULL DEFAULT 0,
+    latest_event_time DATETIME(3) NULL,
+    captured_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    KEY idx_index_storage_snapshots_name_time (index_name, captured_at),
+    KEY idx_index_storage_snapshots_table_time (table_name, captured_at)
 );
 CREATE TABLE IF NOT EXISTS parser_plugins (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -1111,9 +1361,32 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'checksum') THEN
         ALTER TABLE plugin_versions ADD COLUMN checksum VARCHAR(128) NULL AFTER permission_schema;
     END IF;
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
-       AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'signature') THEN
-        ALTER TABLE plugin_versions ADD COLUMN signature VARCHAR(255) NULL AFTER checksum;
+	IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'signature') THEN
+	    ALTER TABLE plugin_versions ADD COLUMN signature VARCHAR(255) NULL AFTER checksum;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'runtime_config') THEN
+	    ALTER TABLE plugin_versions ADD COLUMN runtime_config JSON NOT NULL DEFAULT (JSON_OBJECT()) AFTER permission_schema;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND column_name = 'package_bytes') THEN
+	    ALTER TABLE plugin_versions ADD COLUMN package_bytes LONGBLOB NULL AFTER runtime_config;
+	END IF;
+	IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'plugin_versions')
+	   AND NOT EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND index_name = 'uk_plugin_versions_plugin') THEN
+	    DELETE older
+        FROM plugin_versions older
+        JOIN plugin_versions newer
+          ON older.plugin_id = newer.plugin_id
+         AND (
+              older.updated_at < newer.updated_at
+              OR (older.updated_at = newer.updated_at AND older.id < newer.id)
+         );
+        ALTER TABLE plugin_versions ADD UNIQUE KEY uk_plugin_versions_plugin (plugin_id);
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'plugin_versions' AND index_name = 'uk_plugin_versions_plugin_version') THEN
+        ALTER TABLE plugin_versions DROP INDEX uk_plugin_versions_plugin_version;
     END IF;
 END;
 CALL xdp_ensure_plugin_versions_compat();

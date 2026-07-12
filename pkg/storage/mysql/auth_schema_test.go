@@ -64,6 +64,52 @@ func TestRuntimeSchemaIncludesSavedSearches(t *testing.T) {
 	}
 }
 
+func TestRuntimeSchemaIncludesIndexStorageSnapshots(t *testing.T) {
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS index_storage_snapshots",
+		"index_name VARCHAR(128) NOT NULL",
+		"row_count BIGINT NOT NULL DEFAULT 0",
+		"storage_bytes BIGINT NOT NULL DEFAULT 0",
+		"KEY idx_index_storage_snapshots_name_time (index_name, captured_at)",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeSchemaIncludesPluginRuntimeConfig(t *testing.T) {
+	required := []string{
+		"runtime_config JSON NOT NULL DEFAULT (JSON_OBJECT())",
+		"package_bytes LONGBLOB NULL",
+		"ALTER TABLE plugin_versions ADD COLUMN runtime_config JSON NOT NULL DEFAULT (JSON_OBJECT()) AFTER permission_schema",
+		"ALTER TABLE plugin_versions ADD COLUMN package_bytes LONGBLOB NULL AFTER runtime_config",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema+" "+compatibilitySchema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeSchemaIncludesSearchCommandExecutionAudits(t *testing.T) {
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS search_command_execution_audits",
+		"plugin_code VARCHAR(128) NOT NULL",
+		"timeout_ms INT NOT NULL DEFAULT 5000",
+		"max_input_rows INT NOT NULL DEFAULT 10000",
+		"max_output_bytes INT NOT NULL DEFAULT 4194304",
+		"KEY idx_search_command_audit_plugin_time (plugin_code, created_at)",
+		"KEY idx_search_command_audit_request (request_id)",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
 func TestSeedSavedSearchesOnlySeedsAnEmptyTable(t *testing.T) {
 	if !strings.Contains(seedSavedSearchesCountSQL, "COUNT(*) FROM saved_searches") {
 		t.Fatalf("seed saved searches must check whether table is empty first")
@@ -125,6 +171,9 @@ func TestMigrationFileIncludesAuthTables(t *testing.T) {
 		"UNIQUE KEY uk_data_sources_active_name (active_name)",
 		"CREATE TABLE saved_searches",
 		"KEY idx_saved_searches_status_time (status, updated_at DESC)",
+		"CREATE TABLE index_storage_snapshots",
+		"row_count BIGINT NOT NULL DEFAULT 0",
+		"KEY idx_index_storage_snapshots_name_time (index_name, captured_at)",
 	}
 	for _, want := range required {
 		if !strings.Contains(migration, want) {

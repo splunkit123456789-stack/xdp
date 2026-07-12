@@ -72,16 +72,17 @@ func (p *Plugin) Execute(ctx context.Context, input plugin.SearchInput, query sp
 		return splstats.Result{}, fmt.Errorf("stats search backend is required")
 	}
 	result, err := input.Backend.Stats(ctx, plugin.SearchStatsQuery{
-		Index:     input.Index,
-		Keyword:   input.Keyword,
-		Field:     input.Field,
-		Value:     input.Value,
-		StartTime: input.StartTime,
-		EndTime:   input.EndTime,
-		Limit:     input.Limit,
-		Offset:    input.Offset,
-		Stats:     query,
-		HotFields: input.HotFields,
+		Index:        input.Index,
+		Keyword:      input.Keyword,
+		Field:        input.Field,
+		Value:        input.Value,
+		FieldFilters: input.FieldFilters,
+		StartTime:    input.StartTime,
+		EndTime:      input.EndTime,
+		Limit:        input.Limit,
+		Offset:       input.Offset,
+		Stats:        query,
+		HotFields:    input.HotFields,
 	})
 	if err != nil {
 		return splstats.Result{}, err

@@ -24,11 +24,13 @@ import (
 	ch "xdp/pkg/storage/clickhouse"
 	mysqlstore "xdp/pkg/storage/mysql"
 	geoip "xdp/plugins/enrichment/geoip"
+	kafkainput "xdp/plugins/input/kafka"
 	sysloginput "xdp/plugins/input/syslog"
 	clickhouseoutput "xdp/plugins/output/clickhouse"
 	kafkaoutput "xdp/plugins/output/kafka"
 	memoryoutput "xdp/plugins/output/memory"
 	s3output "xdp/plugins/output/s3"
+	jsonparser "xdp/plugins/parser/json"
 	propsconfparser "xdp/plugins/parser/propsconf"
 	regexparser "xdp/plugins/parser/regex"
 	indexrouter "xdp/plugins/router/indexrouter"
@@ -64,8 +66,10 @@ var requestSeq atomic.Uint64
 
 func NewHandler(logger *slog.Logger) http.Handler {
 	reg := plugin.NewRegistry()
+	must(kafkainput.Register(reg))
 	must(sysloginput.Register(reg))
 	must(propsconfparser.Register(reg))
+	must(jsonparser.Register(reg))
 	must(regexparser.Register(reg))
 	must(fieldmapping.Register(reg))
 	must(typeconvert.Register(reg))
@@ -91,7 +95,7 @@ func NewHandler(logger *slog.Logger) http.Handler {
 				ctx, cancel := contextWithTimeout()
 				if err := client.Ping(ctx); err == nil {
 					_ = client.Migrate(ctx)
-					_ = client.SeedPlugins(ctx, reg.List(""))
+					_ = client.SeedPlugins(ctx, seedableBuiltinPluginMetadata(reg.List("")))
 					if auth.Enabled {
 						passwordHash, err := hashPassword(auth.Password)
 						if err != nil {
@@ -142,7 +146,9 @@ func NewHandler(logger *slog.Logger) http.Handler {
 		ctx, cancel := contextWithTimeout()
 		h.seedConfigStore(ctx)
 		h.loadConfigStore(ctx)
+		h.recoverExecutableSearchCommandRuntimes(ctx)
 		cancel()
+		h.startIndexSnapshotSampler()
 	}
 	h.routes()
 	return h
@@ -160,20 +166,35 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.health)
 	h.mux.HandleFunc("GET /readyz", h.health)
 	h.mux.HandleFunc("GET /metrics", h.prometheus)
+	h.mux.HandleFunc("GET /api/v1/writer/runtime", h.writerRuntime)
 	h.mux.HandleFunc("GET /api/v1/auth", h.authStatus)
 	h.mux.HandleFunc("POST /api/v1/login", h.login)
 	h.mux.HandleFunc("GET /api/v1/plugins", h.listPlugins)
+	h.mux.HandleFunc("GET /api/v1/plugins/catalog", h.listPluginCatalog)
 	h.mux.HandleFunc("POST /api/v1/plugins/import", h.importPlugin)
+	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}", h.getPlugin)
+	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}/schema", h.getPluginSchema)
+	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}/execution-audits", h.getPluginExecutionAudits)
+	h.mux.HandleFunc("POST /api/v1/plugins/{plugin_code}/enable", h.enablePlugin)
+	h.mux.HandleFunc("POST /api/v1/plugins/{plugin_code}/disable", h.disablePlugin)
+	h.mux.HandleFunc("DELETE /api/v1/plugins/{plugin_code}", h.deletePlugin)
 	h.mux.HandleFunc("GET /api/v1/input-plugins", h.listInputPlugins)
 	h.mux.HandleFunc("GET /api/v1/parser-plugins", h.listParserPlugins)
 	h.mux.HandleFunc("GET /api/v1/pipelines", h.listPipelines)
 	h.mux.HandleFunc("GET /api/v1/runtime/pipelines", h.listRuntimePipelines)
 	h.mux.HandleFunc("POST /api/v1/pipelines", h.savePipeline)
 	h.mux.HandleFunc("GET /api/v1/indexes", h.listIndexes)
+	h.mux.HandleFunc("POST /api/v1/indexes/snapshots", h.sampleIndexSnapshots)
 	h.mux.HandleFunc("POST /api/v1/indexes", h.saveIndex)
 	h.mux.HandleFunc("DELETE /api/v1/indexes", h.deleteIndex)
+	h.mux.HandleFunc("GET /api/v1/indexes/{index_name}", h.getIndex)
+	h.mux.HandleFunc("PUT /api/v1/indexes/{index_name}", h.updateIndex)
+	h.mux.HandleFunc("PATCH /api/v1/indexes/{index_name}/ttl", h.updateIndexTTL)
+	h.mux.HandleFunc("GET /api/v1/indexes/{index_name}/trend", h.getIndexTrend)
+	h.mux.HandleFunc("DELETE /api/v1/indexes/{index_name}", h.deleteIndexPath)
 	h.mux.HandleFunc("GET /api/v1/datasources", h.listDataSources)
 	h.mux.HandleFunc("POST /api/v1/datasources/port-check", h.checkDataSourcePort)
+	h.mux.HandleFunc("POST /api/v1/datasources/connectivity-check", h.checkDataSourceConnectivity)
 	h.mux.HandleFunc("POST /api/v1/datasources", h.saveDataSource)
 	h.mux.HandleFunc("GET /api/v1/datasources/{id}", h.getDataSource)
 	h.mux.HandleFunc("PUT /api/v1/datasources/{id}", h.updateDataSource)
@@ -202,58 +223,677 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listPlugins(w http.ResponseWriter, r *http.Request) {
-	filterType := normalizePluginType(r.URL.Query().Get("type"))
-	if h.mysql != nil {
-		if items, err := h.mysql.ListPluginRecords(r.Context()); err == nil {
-			plugins := pluginResponsesFromRecords(items, filterType)
-			writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
-			return
+	filterType := pluginTypeFromRequest(r)
+	if filterType == "" {
+		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_REQUIRED", "plugin_type is required")
+		return
+	}
+	if !supportedImportedPluginType(filterType) {
+		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_UNSUPPORTED", "unsupported plugin_type")
+		return
+	}
+	allPlugins := h.allCurrentPlugins(r.Context())
+	typeCounts := pluginTypeCounts(allPlugins)
+	plugins := filterPluginsByType(allPlugins, filterType)
+	pageItems, pagination := paginateList(plugins, r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plugins":     pageItems,
+		"pagination":  pagination,
+		"type_counts": typeCounts,
+	})
+}
+
+func (h *Handler) listPluginCatalog(w http.ResponseWriter, r *http.Request) {
+	filterType := pluginTypeFromRequest(r)
+	if filterType == "" {
+		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_REQUIRED", "plugin_type is required")
+		return
+	}
+	if !supportedImportedPluginType(filterType) {
+		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_UNSUPPORTED", "unsupported plugin_type")
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	if status == "" {
+		status = "enabled"
+	}
+	plugins := filterPluginsByType(h.allCurrentPlugins(r.Context()), filterType)
+	filtered := make([]PluginImportResponse, 0, len(plugins))
+	for _, item := range plugins {
+		if status == "all" || (status == "enabled" && isPluginEnabled(item.Status)) || strings.EqualFold(item.Status, status) {
+			filtered = append(filtered, item)
 		}
 	}
-	plugins := pluginResponsesFromMetadata(h.reg.List(""), filterType)
+	writeJSON(w, http.StatusOK, map[string]any{"plugins": filtered})
+}
+
+func (h *Handler) allCurrentPlugins(ctx context.Context) []PluginImportResponse {
+	items := pluginResponsesFromMetadata(h.reg.List(""), "")
+	if h.mysql != nil {
+		if records, err := h.mysql.ListPluginRecords(ctx); err == nil {
+			items = append(items, pluginResponsesFromRecords(records, "")...)
+		}
+	}
 	h.mu.RLock()
 	for _, item := range h.importedPlugins {
-		if filterType == "" || item.PluginType == filterType {
-			plugins = append(plugins, item)
-		}
+		items = append(items, item)
 	}
 	h.mu.RUnlock()
-	sort.SliceStable(plugins, func(i, j int) bool {
-		if plugins[i].PluginType == plugins[j].PluginType {
-			return plugins[i].PluginCode < plugins[j].PluginCode
+	return currentPluginResponses(items)
+}
+
+func seedableBuiltinPluginMetadata(items []plugin.Metadata) []plugin.Metadata {
+	filtered := make([]plugin.Metadata, 0, len(items))
+	for _, item := range items {
+		pluginType := normalizePluginType(string(item.Type))
+		if productVisibleBuiltinPlugin(pluginType, item.Code) {
+			item.Type = plugin.Type(pluginType)
+			filtered = append(filtered, item)
 		}
-		return plugins[i].PluginType < plugins[j].PluginType
+	}
+	return filtered
+}
+
+func currentPluginResponses(items []PluginImportResponse) []PluginImportResponse {
+	current := map[string]PluginImportResponse{}
+	for _, item := range deduplicatePluginResponses(items) {
+		item = normalizePluginResponse(item)
+		key := item.PluginType + "/" + item.PluginCode
+		existing, ok := current[key]
+		if !ok || preferCurrentPlugin(item, existing) {
+			current[key] = item
+		}
+	}
+	out := make([]PluginImportResponse, 0, len(current))
+	for _, item := range current {
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].PluginType == out[j].PluginType {
+			return out[i].PluginCode < out[j].PluginCode
+		}
+		return out[i].PluginType < out[j].PluginType
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
+	return out
+}
+
+func preferCurrentPlugin(candidate, existing PluginImportResponse) bool {
+	candidateEnabled := isPluginEnabled(candidate.Status)
+	existingEnabled := isPluginEnabled(existing.Status)
+	if candidateEnabled != existingEnabled {
+		return candidateEnabled
+	}
+	return compareSemanticVersion(candidate.PluginVersion, existing.PluginVersion) > 0
+}
+
+func filterPluginsByType(items []PluginImportResponse, pluginType string) []PluginImportResponse {
+	filtered := make([]PluginImportResponse, 0, len(items))
+	for _, item := range items {
+		if item.PluginType == pluginType {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func pluginTypeCounts(items []PluginImportResponse) map[string]int {
+	counts := map[string]int{
+		"input":          0,
+		"parser":         0,
+		"search_command": 0,
+	}
+	for _, item := range items {
+		if _, ok := counts[item.PluginType]; ok {
+			counts[item.PluginType]++
+		}
+	}
+	return counts
 }
 
 func (h *Handler) importPlugin(w http.ResponseWriter, r *http.Request) {
 	data, err := readPluginPackage(r)
 	if err != nil {
-		writeErrorCode(w, http.StatusBadRequest, "INVALID_PLUGIN_PACKAGE", err.Error())
+		writePluginPackageError(w, err)
 		return
 	}
 	manifest, err := parsePluginManifest(data)
 	if err != nil {
-		writeErrorCode(w, http.StatusBadRequest, "INVALID_PLUGIN_MANIFEST", err.Error())
+		writePluginPackageError(w, err)
 		return
 	}
-	requestedType := normalizePluginType(r.URL.Query().Get("plugin_type"))
-	if requestedType == "" {
-		requestedType = normalizePluginType(r.FormValue("plugin_type"))
-	}
-	if requestedType != "" && requestedType != normalizePluginType(manifest.PluginType) {
-		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_MISMATCH", "request plugin_type does not match manifest")
+	if err := validatePluginPackageAssets(data, manifest); err != nil {
+		writePluginPackageError(w, err)
 		return
 	}
+	overwrite, _ := strconv.ParseBool(strings.TrimSpace(r.URL.Query().Get("overwrite")))
 	item := manifest.toImportResponse(pluginChecksum(data))
+	item.PackageBytes = data
+	existing, exists := h.findPlugin(item.PluginType, item.PluginCode, "")
+	if exists {
+		if compareSemanticVersion(item.PluginVersion, existing.PluginVersion) <= 0 {
+			if !overwrite {
+				writeErrorCode(w, http.StatusConflict, "PLUGIN_ALREADY_EXISTS", "plugin already exists, confirm overwrite to replace the current plugin package")
+				return
+			}
+		}
+		if apiErr := h.validatePluginUpgrade(item); apiErr != nil {
+			writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
+			return
+		}
+		item.Status = existing.Status
+	}
+	if isPluginEnabled(item.Status) {
+		if err := prepareExecutableSearchCommandPlugin(item); err != nil {
+			writeErrorCode(w, http.StatusBadRequest, "PLUGIN_RUNTIME_PREPARE_FAILED", err.Error())
+			return
+		}
+	}
 	if h.mysql != nil {
-		_ = h.mysql.UpsertPluginRecord(r.Context(), item.toStoreRecord())
+		if err := h.mysql.UpsertPluginRecord(r.Context(), item.toStoreRecord()); err != nil {
+			writeErrorCode(w, http.StatusInternalServerError, "PLUGIN_PERSIST_FAILED", err.Error())
+			return
+		}
 	}
 	h.mu.Lock()
 	h.importedPlugins[item.key()] = item
 	h.mu.Unlock()
+	if exists && isPluginEnabled(item.Status) && existing.Checksum != "" && existing.Checksum != item.Checksum {
+		if err := removeExecutableSearchCommandPluginRuntime(existing); err != nil {
+			h.logger.Warn("remove previous plugin runtime failed", "plugin_type", existing.PluginType, "plugin_code", existing.PluginCode, "error", err)
+		}
+	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func (h *Handler) getPlugin(w http.ResponseWriter, r *http.Request) {
+	pluginType := pluginTypeFromRequest(r)
+	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	item, ok := h.findPlugin(pluginType, code, "")
+	if !ok {
+		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, h.pluginDetail(item))
+}
+
+func (h *Handler) getPluginSchema(w http.ResponseWriter, r *http.Request) {
+	pluginType := pluginTypeFromRequest(r)
+	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	item, ok := h.findPlugin(pluginType, code, "")
+	if !ok {
+		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+		return
+	}
+	payload := map[string]any{
+		"plugin_code":       item.PluginCode,
+		"plugin_type":       item.PluginType,
+		"plugin_version":    item.PluginVersion,
+		"config_schema":     item.ConfigSchema,
+		"ui_schema":         item.UISchema,
+		"input_schema":      item.InputSchema,
+		"output_schema":     item.OutputSchema,
+		"permission_schema": item.PermissionSchema,
+		"runtime_config":    item.RuntimeConfig,
+	}
+	if strings.TrimSpace(item.Runtime) == "executable_search_command" {
+		payload["effective_runtime_config"] = effectiveExecutablePluginRuntimeConfig(item.RuntimeConfig)
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (h *Handler) getPluginExecutionAudits(w http.ResponseWriter, r *http.Request) {
+	pluginType := pluginTypeFromRequest(r)
+	if pluginType != "search_command" {
+		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_UNSUPPORTED", "execution audits only support search_command plugins")
+		return
+	}
+	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	item, ok := h.findPlugin(pluginType, code, "")
+	if !ok {
+		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+		return
+	}
+	if productVisibleBuiltinPlugin(item.PluginType, item.PluginCode) {
+		writeErrorCode(w, http.StatusConflict, "BUILTIN_PLUGIN_PROTECTED", "builtin plugin does not expose execution audits")
+		return
+	}
+	limit := ch.ParseLimit(r.URL.Query().Get("limit"), 20)
+	if limit > 100 {
+		limit = 100
+	}
+	audits := []map[string]any{}
+	if h.mysql != nil {
+		items, err := h.mysql.ListSearchCommandExecutionAudits(r.Context(), item.PluginCode, limit)
+		if err != nil {
+			writeErrorCode(w, http.StatusBadGateway, "PLUGIN_EXEC_AUDIT_QUERY_FAILED", err.Error())
+			return
+		}
+		for _, audit := range items {
+			audits = append(audits, searchCommandExecutionAuditResponse(audit))
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plugin_code": item.PluginCode,
+		"plugin_type": item.PluginType,
+		"audits":      audits,
+	})
+}
+
+func searchCommandExecutionAuditResponse(item mysqlstore.SearchCommandExecutionAudit) map[string]any {
+	return map[string]any{
+		"request_id":       item.RequestID,
+		"search_id":        item.SearchID,
+		"plugin_type":      item.PluginType,
+		"plugin_code":      item.PluginCode,
+		"plugin_version":   item.PluginVersion,
+		"command_name":     item.CommandName,
+		"runtime":          item.Runtime,
+		"interpreter":      item.Interpreter,
+		"timeout_ms":       item.TimeoutMS,
+		"max_input_rows":   item.MaxInputRows,
+		"max_output_bytes": item.MaxOutputBytes,
+		"input_rows":       item.InputRows,
+		"output_rows":      item.OutputRows,
+		"elapsed_ms":       item.ElapsedMS,
+		"success":          item.Success,
+		"error_code":       item.ErrorCode,
+		"error_message":    item.ErrorMessage,
+		"stdout_bytes":     item.StdoutBytes,
+		"stderr_bytes":     item.StderrBytes,
+		"created_at":       item.CreatedAt.Format(time.RFC3339Nano),
+	}
+}
+
+func (h *Handler) enablePlugin(w http.ResponseWriter, r *http.Request) {
+	h.setPluginStatus(w, r, "enabled")
+}
+
+func (h *Handler) disablePlugin(w http.ResponseWriter, r *http.Request) {
+	pluginType := pluginTypeFromRequest(r)
+	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	if productVisibleBuiltinPlugin(pluginType, code) {
+		writeErrorCode(w, http.StatusConflict, "BUILTIN_PLUGIN_PROTECTED", "builtin plugin is protected")
+		return
+	}
+	if h.pluginReferenceCount(pluginType, code) > 0 {
+		writeErrorCode(w, http.StatusConflict, "PLUGIN_IN_USE", "plugin is in use")
+		return
+	}
+	h.setPluginStatus(w, r, "disabled")
+}
+
+func (h *Handler) deletePlugin(w http.ResponseWriter, r *http.Request) {
+	pluginType := pluginTypeFromRequest(r)
+	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	if productVisibleBuiltinPlugin(pluginType, code) {
+		writeErrorCode(w, http.StatusConflict, "BUILTIN_PLUGIN_PROTECTED", "builtin plugin is protected")
+		return
+	}
+	if h.pluginReferenceCount(pluginType, code) > 0 {
+		writeErrorCode(w, http.StatusConflict, "PLUGIN_IN_USE", "plugin is in use")
+		return
+	}
+	if h.mysql != nil {
+		item, ok := h.findPlugin(pluginType, code, "")
+		if !ok {
+			writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+			return
+		}
+		if item.Status == "enabled" || item.Status == "active" {
+			writeErrorCode(w, http.StatusConflict, "PLUGIN_IN_USE", "enabled plugin cannot be deleted")
+			return
+		}
+		if err := h.mysql.DeletePlugin(r.Context(), pluginType, code); err != nil {
+			writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+			return
+		}
+		if err := removeExecutableSearchCommandPluginCodeRuntime(item); err != nil {
+			h.logger.Warn("remove plugin runtime failed", "plugin_type", item.PluginType, "plugin_code", item.PluginCode, "error", err)
+		}
+		h.mu.Lock()
+		delete(h.importedPlugins, pluginKey(pluginType, code, ""))
+		h.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	key := pluginKey(pluginType, code, "")
+	item, ok := h.importedPlugins[key]
+	if !ok {
+		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+		return
+	}
+	if item.Status == "enabled" || item.Status == "active" {
+		writeErrorCode(w, http.StatusConflict, "PLUGIN_IN_USE", "enabled plugin cannot be deleted")
+		return
+	}
+	if err := removeExecutableSearchCommandPluginCodeRuntime(item); err != nil {
+		h.logger.Warn("remove plugin runtime failed", "plugin_type", item.PluginType, "plugin_code", item.PluginCode, "error", err)
+	}
+	delete(h.importedPlugins, key)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) setPluginStatus(w http.ResponseWriter, r *http.Request, status string) {
+	pluginType := pluginTypeFromRequest(r)
+	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	if productVisibleBuiltinPlugin(pluginType, code) {
+		writeErrorCode(w, http.StatusConflict, "BUILTIN_PLUGIN_PROTECTED", "builtin plugin is protected")
+		return
+	}
+	if h.mysql != nil {
+		if status == "enabled" {
+			item, ok := h.findPlugin(pluginType, code, "")
+			if !ok {
+				writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+				return
+			}
+			if err := prepareExecutableSearchCommandPlugin(item); err != nil {
+				writeErrorCode(w, http.StatusBadRequest, "PLUGIN_RUNTIME_PREPARE_FAILED", err.Error())
+				return
+			}
+		}
+		item, err := h.mysql.SetPluginStatus(r.Context(), pluginType, code, status)
+		if err != nil {
+			writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+			return
+		}
+		plugins := pluginResponsesFromRecords([]mysqlstore.PluginRecord{item}, pluginType)
+		if len(plugins) == 0 {
+			writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+			return
+		}
+		h.mu.Lock()
+		h.importedPlugins[plugins[0].key()] = plugins[0]
+		h.mu.Unlock()
+		if status == "disabled" {
+			if err := removeExecutableSearchCommandPluginCodeRuntime(plugins[0]); err != nil {
+				h.logger.Warn("remove plugin runtime failed", "plugin_type", plugins[0].PluginType, "plugin_code", plugins[0].PluginCode, "error", err)
+			}
+		}
+		writeJSON(w, http.StatusOK, plugins[0])
+		return
+	}
+	h.mu.Lock()
+	key := pluginKey(pluginType, code, "")
+	item, ok := h.importedPlugins[key]
+	if !ok {
+		h.mu.Unlock()
+		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
+		return
+	}
+	h.mu.Unlock()
+	if status == "enabled" {
+		if err := prepareExecutableSearchCommandPlugin(item); err != nil {
+			writeErrorCode(w, http.StatusBadRequest, "PLUGIN_RUNTIME_PREPARE_FAILED", err.Error())
+			return
+		}
+	}
+	item.Status = status
+	h.mu.Lock()
+	h.importedPlugins[key] = item
+	h.mu.Unlock()
+	if status == "disabled" {
+		if err := removeExecutableSearchCommandPluginCodeRuntime(item); err != nil {
+			h.logger.Warn("remove plugin runtime failed", "plugin_type", item.PluginType, "plugin_code", item.PluginCode, "error", err)
+		}
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) recoverExecutableSearchCommandRuntimes(ctx context.Context) {
+	for _, item := range h.allCurrentPlugins(ctx) {
+		if item.PluginType != "search_command" || !isPluginEnabled(item.Status) || strings.TrimSpace(item.Runtime) != "executable_search_command" {
+			continue
+		}
+		if err := prepareExecutableSearchCommandPlugin(item); err != nil {
+			h.logger.Warn("recover executable search command runtime failed", "plugin_code", item.PluginCode, "error", err)
+		}
+	}
+}
+
+func (h *Handler) validatePluginUpgrade(candidate PluginImportResponse) *collectAPIError {
+	switch candidate.PluginType {
+	case "input":
+		h.mu.RLock()
+		configs := make([]map[string]any, 0)
+		for _, source := range h.dataSources {
+			if source.Status != "deleted" && source.PluginCode == candidate.PluginCode {
+				configs = append(configs, cloneAnyMap(source.PluginConfig))
+			}
+		}
+		h.mu.RUnlock()
+		for _, config := range configs {
+			if apiErr := validateConfigBySchema(candidate.ConfigSchema, config); apiErr != nil {
+				return &collectAPIError{status: http.StatusConflict, code: "PLUGIN_UPGRADE_INCOMPATIBLE", message: apiErr.message}
+			}
+		}
+	case "parser":
+		h.mu.RLock()
+		configs := make([]map[string]any, 0)
+		for _, rule := range h.parseRules {
+			if rule.Status != "deleted" && rule.ParserPlugin == candidate.PluginCode {
+				configs = append(configs, cloneAnyMap(rule.PluginConfig))
+			}
+		}
+		h.mu.RUnlock()
+		for _, config := range configs {
+			if apiErr := validateConfigBySchema(candidate.ConfigSchema, config); apiErr != nil {
+				return &collectAPIError{status: http.StatusConflict, code: "PLUGIN_UPGRADE_INCOMPATIBLE", message: apiErr.message}
+			}
+		}
+	}
+	return nil
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func (h *Handler) pluginDetail(item PluginImportResponse) map[string]any {
+	references := h.pluginReferences(item.PluginType, item.PluginCode)
+	detail := map[string]any{
+		"plugin_code":       item.PluginCode,
+		"plugin_type":       item.PluginType,
+		"plugin_version":    item.PluginVersion,
+		"name":              item.Name,
+		"description":       item.Description,
+		"runtime":           item.Runtime,
+		"entrypoint":        item.Entrypoint,
+		"status":            item.Status,
+		"checksum":          item.Checksum,
+		"config_schema":     item.ConfigSchema,
+		"ui_schema":         item.UISchema,
+		"input_schema":      item.InputSchema,
+		"output_schema":     item.OutputSchema,
+		"permission_schema": item.PermissionSchema,
+		"runtime_config":    item.RuntimeConfig,
+		"built_in":          productVisibleBuiltinPlugin(item.PluginType, item.PluginCode),
+		"references": map[string]any{
+			"count": len(references),
+			"items": references,
+		},
+	}
+	if strings.TrimSpace(item.Runtime) == "executable_search_command" {
+		detail["effective_runtime_config"] = effectiveExecutablePluginRuntimeConfig(item.RuntimeConfig)
+	}
+	return detail
+}
+
+func (h *Handler) findPlugin(pluginType, code, version string) (PluginImportResponse, bool) {
+	if pluginType == "" {
+		return PluginImportResponse{}, false
+	}
+	items := h.pluginVersions(pluginType, code)
+	if len(items) == 0 {
+		return PluginImportResponse{}, false
+	}
+	for _, item := range items {
+		if item.Status == "enabled" || item.Status == "active" {
+			return item, true
+		}
+	}
+	return items[0], true
+}
+
+func (h *Handler) pluginVersions(pluginType, code string) []PluginImportResponse {
+	items := []PluginImportResponse{}
+	seen := map[string]struct{}{}
+	add := func(item PluginImportResponse) {
+		item = normalizePluginResponse(item)
+		key := pluginKey(item.PluginType, item.PluginCode, "")
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		items = append(items, item)
+	}
+	if productVisibleBuiltinPlugin(pluginType, code) {
+		for _, item := range pluginResponsesFromMetadata(h.reg.List(""), pluginType) {
+			if item.PluginCode == code {
+				add(item.withStatus("enabled"))
+			}
+		}
+	}
+	if h.mysql != nil {
+		if record, err := h.mysql.GetPluginRecord(context.Background(), pluginType, code, ""); err == nil {
+			for _, item := range pluginResponsesFromRecords([]mysqlstore.PluginRecord{record}, pluginType) {
+				add(item)
+			}
+		}
+	}
+	h.mu.RLock()
+	for _, item := range h.importedPlugins {
+		normalized := normalizePluginResponse(item)
+		if normalized.PluginType == pluginType && normalized.PluginCode == strings.TrimSpace(code) {
+			add(normalized)
+		}
+	}
+	h.mu.RUnlock()
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].PluginVersion < items[j].PluginVersion
+	})
+	return items
+}
+
+func (h *Handler) pluginReferenceCount(pluginType, code string) int {
+	if pluginType == "search_command" && h.mysql != nil {
+		if savedSearches, err := h.mysql.ListSavedSearches(context.Background()); err == nil {
+			return countSavedSearchCommandReferences(savedSearches, code)
+		}
+	}
+
+	return len(h.pluginReferences(pluginType, code))
+}
+
+func (h *Handler) pluginReferences(pluginType, code string) []map[string]string {
+	refs := []map[string]string{}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	switch pluginType {
+	case "input":
+		for _, source := range h.dataSources {
+			if source.Status != "deleted" && source.PluginCode == code {
+				refs = append(refs, map[string]string{
+					"type":   "datasource",
+					"id":     source.ID,
+					"name":   source.Name,
+					"status": source.Status,
+				})
+			}
+		}
+	case "parser":
+		for _, rule := range h.parseRules {
+			if rule.Status != "deleted" && rule.ParserPlugin == code {
+				refs = append(refs, map[string]string{
+					"type":   "parse_rule",
+					"id":     rule.ID,
+					"name":   rule.Name,
+					"status": rule.Status,
+				})
+			}
+		}
+	case "search_command":
+		for _, saved := range mapValues(h.savedSearches) {
+			if saved.Status != "deleted" && savedSearchUsesCommand(saved.SPL, code) {
+				refs = append(refs, map[string]string{
+					"type":   "saved_search",
+					"id":     saved.ID,
+					"name":   saved.Name,
+					"status": saved.Status,
+				})
+			}
+		}
+	}
+	return refs
+}
+
+func countSavedSearchCommandReferences(savedSearches []mysqlstore.SavedSearch, code string) int {
+	count := 0
+	for _, saved := range savedSearches {
+		if saved.Status != "deleted" && savedSearchUsesCommand(saved.SPL, code) {
+			count++
+		}
+	}
+	return count
+}
+
+func savedSearchUsesCommand(spl, code string) bool {
+	command := strings.ToLower(strings.TrimSpace(code))
+	if command == "" {
+		return false
+	}
+	for _, segment := range strings.Split(spl, "|") {
+		fields := strings.Fields(strings.TrimSpace(segment))
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.ToLower(fields[0]) == command {
+			return true
+		}
+	}
+	return false
+}
+
+func mapValues(values map[string]mysqlstore.SavedSearch) []mysqlstore.SavedSearch {
+	items := make([]mysqlstore.SavedSearch, 0, len(values))
+	for _, item := range values {
+		items = append(items, item)
+	}
+	return items
+}
+
+func pluginTypeFromRequest(r *http.Request) string {
+	pluginType := normalizePluginType(r.URL.Query().Get("plugin_type"))
+	if pluginType == "" {
+		pluginType = normalizePluginType(r.URL.Query().Get("type"))
+	}
+	return pluginType
+}
+
+func pluginKey(pluginType, code, version string) string {
+	return normalizePluginType(pluginType) + "/" + strings.TrimSpace(code)
+}
+
+func writePluginPackageError(w http.ResponseWriter, err error) {
+	if pluginErr, ok := err.(pluginPackageError); ok {
+		status := http.StatusBadRequest
+		switch pluginErr.code {
+		case "BUILTIN_PLUGIN_PROTECTED":
+			status = http.StatusConflict
+		}
+		writeErrorCode(w, status, pluginErr.code, pluginErr.message)
+		return
+	}
+	writeErrorCode(w, http.StatusBadRequest, "PLUGIN_PACKAGE_INVALID", err.Error())
 }
 
 func (h *Handler) listPipelines(w http.ResponseWriter, r *http.Request) {
@@ -314,6 +954,7 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := SearchQuery{Index: r.URL.Query().Get("index"), Keyword: r.URL.Query().Get("keyword"), Field: r.URL.Query().Get("field"), Value: r.URL.Query().Get("value"), StartTime: startTime, EndTime: endTime, Limit: limit, Offset: offset, Q: r.URL.Query().Get("q"), Earliest: earliest, Latest: latest}
+	query.NormalizeFieldFilters()
 	if strings.TrimSpace(query.Q) != "" {
 		parsed, err := splquery.Parse(query.Q)
 		if err != nil {
@@ -326,7 +967,15 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if parsed.Stats != nil {
+			if len(parsed.Commands) > 0 {
+				h.searchStatsCommands(w, r, query, *parsed.Stats, parsed.Commands, started)
+				return
+			}
 			h.searchStats(w, r, query, *parsed.Stats, started)
+			return
+		}
+		if len(parsed.Commands) > 0 {
+			h.searchCommands(w, r, query, parsed.Commands, started)
 			return
 		}
 	}
@@ -345,20 +994,87 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
+func (h *Handler) searchCommands(w http.ResponseWriter, r *http.Request, query SearchQuery, commands []splquery.Command, started time.Time) {
+	fetchQuery := query
+	fetchQuery.Limit = 1000
+	fetchQuery.Offset = 0
+	events, _, err := h.findEvents(r.Context(), fetchQuery)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "search failed")
+		return
+	}
+	requestID := newRequestID()
+	result, meta, err := h.executeSearchCommandPlugins(r.Context(), requestID, eventRowsFromEvents(events), nil, commands)
+	if err != nil {
+		writeSearchCommandPluginError(w, requestID, err)
+		return
+	}
+	rows, pagination := paginateTableRows(result.Rows, query)
+	result.Rows = rows
+	writeJSON(w, http.StatusOK, newSearchResponse(query, "table", started, func(response *SearchResponse) {
+		response.SearchCommand = meta
+		response.Table = &SearchTableResult{Fields: result.Fields, Rows: result.Rows, Limit: pagination.Limit}
+		response.Pagination = &pagination
+	}))
+}
+
+func (h *Handler) searchStatsCommands(w http.ResponseWriter, r *http.Request, query SearchQuery, stats splstats.Query, commands []splquery.Command, started time.Time) {
+	fetchQuery := query
+	fetchQuery.Limit = 1000
+	fetchQuery.Offset = 0
+	input := plugin.SearchInput{
+		Index:        fetchQuery.Index,
+		Keyword:      fetchQuery.Keyword,
+		Field:        fetchQuery.Field,
+		Value:        fetchQuery.Value,
+		FieldFilters: searchPluginFieldFilters(fetchQuery.FieldFilters),
+		StartTime:    fetchQuery.StartTime,
+		EndTime:      fetchQuery.EndTime,
+		Limit:        fetchQuery.Limit,
+		Offset:       fetchQuery.Offset,
+		HotFields:    searchPluginHotFields(h.hotFieldsForIndex(fetchQuery.Index)),
+	}
+	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
+		input.Backend = clickHouseStatsBackend{client: h.clickhouse}
+	} else {
+		input.Backend = memoryStatsBackend{store: memoryoutput.DefaultStore()}
+	}
+	statsResult, err := h.executeStatsSearchPlugin(r.Context(), input, stats)
+	if err != nil {
+		h.logger.Warn("stats search plugin failed", "error", err)
+		writeError(w, http.StatusBadGateway, "stats search plugin failed")
+		return
+	}
+	requestID := newRequestID()
+	result, meta, err := h.executeSearchCommandPlugins(r.Context(), requestID, statsResult.Rows, statsResult.Fields, commands)
+	if err != nil {
+		writeSearchCommandPluginError(w, requestID, err)
+		return
+	}
+	rows, pagination := paginateTableRows(result.Rows, query)
+	result.Rows = rows
+	writeJSON(w, http.StatusOK, newSearchResponse(query, "table", started, func(response *SearchResponse) {
+		response.SearchCommand = meta
+		response.Table = &SearchTableResult{Fields: result.Fields, Rows: result.Rows, Limit: pagination.Limit}
+		response.Pagination = &pagination
+	}))
+}
+
 func (h *Handler) searchStats(w http.ResponseWriter, r *http.Request, query SearchQuery, stats splstats.Query, started time.Time) {
 	fetchQuery := query
 	fetchQuery.Limit = 1000
 	fetchQuery.Offset = 0
 	input := plugin.SearchInput{
-		Index:     fetchQuery.Index,
-		Keyword:   fetchQuery.Keyword,
-		Field:     fetchQuery.Field,
-		Value:     fetchQuery.Value,
-		StartTime: fetchQuery.StartTime,
-		EndTime:   fetchQuery.EndTime,
-		Limit:     fetchQuery.Limit,
-		Offset:    fetchQuery.Offset,
-		HotFields: searchPluginHotFields(h.hotFieldsForIndex(fetchQuery.Index)),
+		Index:        fetchQuery.Index,
+		Keyword:      fetchQuery.Keyword,
+		Field:        fetchQuery.Field,
+		Value:        fetchQuery.Value,
+		FieldFilters: searchPluginFieldFilters(fetchQuery.FieldFilters),
+		StartTime:    fetchQuery.StartTime,
+		EndTime:      fetchQuery.EndTime,
+		Limit:        fetchQuery.Limit,
+		Offset:       fetchQuery.Offset,
+		HotFields:    searchPluginHotFields(h.hotFieldsForIndex(fetchQuery.Index)),
 	}
 	if os.Getenv("XDP_OUTPUT") == "clickhouse" {
 		input.Backend = clickHouseStatsBackend{client: h.clickhouse}
@@ -397,6 +1113,109 @@ func (h *Handler) executeStatsSearchPlugin(ctx context.Context, input plugin.Sea
 	return searchPlugin.Execute(ctx, input, stats)
 }
 
+func (h *Handler) executeSearchCommandPlugins(ctx context.Context, requestID string, rows []map[string]any, fields []string, commands []splquery.Command) (plugin.SearchCommandResult, *SearchCommandMeta, error) {
+	result := plugin.SearchCommandResult{Rows: rows, Fields: fields, OutputMode: "rows"}
+	var metaOut *SearchCommandMeta
+	for _, command := range commands {
+		item, ok := h.enabledSearchCommandPlugin(command.Name)
+		if !ok {
+			return plugin.SearchCommandResult{}, nil, fmt.Errorf("search command plugin %s is not enabled", command.Name)
+		}
+		next, err := h.executeSearchCommandPluginRuntimeWithAudit(ctx, requestID, result, item, command)
+		if err != nil {
+			return plugin.SearchCommandResult{}, nil, err
+		}
+		if len(next.Fields) == 0 {
+			next.Fields = result.Fields
+		}
+		result = next
+		nextMeta := &SearchCommandMeta{PluginCode: item.PluginCode, PluginType: "search_command", PluginVersion: item.PluginVersion, Runtime: item.Runtime, OutputMode: firstNonEmpty(result.OutputMode, "rows")}
+		if metaOut == nil || nextMeta.OutputMode == "table" {
+			metaOut = nextMeta
+		}
+	}
+	if len(result.Fields) == 0 {
+		result.Fields = inferSearchTableFields(result.Rows)
+	}
+	if result.OutputMode == "" {
+		result.OutputMode = "table"
+	}
+	if metaOut == nil {
+		metaOut = &SearchCommandMeta{PluginCode: "table", PluginType: string(plugin.TypeSearchCommand), PluginVersion: "1.0.0", Runtime: "go_builtin", OutputMode: "table"}
+	}
+	if metaOut.OutputMode == "rows" {
+		metaOut.OutputMode = "table"
+	}
+	return result, metaOut, nil
+}
+
+func (h *Handler) executeSearchCommandPluginRuntimeWithAudit(ctx context.Context, requestID string, input plugin.SearchCommandResult, item PluginImportResponse, command splquery.Command) (plugin.SearchCommandResult, error) {
+	if strings.TrimSpace(item.Runtime) != "executable_search_command" {
+		return executeSearchCommandPluginRuntime(ctx, input, item, command)
+	}
+	result, audit, err := executeExecutableSearchCommandMeasured(ctx, input, item, command)
+	h.saveSearchCommandExecutionAudit(ctx, requestID, item, command, audit)
+	return result, err
+}
+
+func (h *Handler) saveSearchCommandExecutionAudit(ctx context.Context, requestID string, item PluginImportResponse, command splquery.Command, audit executableSearchCommandAudit) {
+	if h == nil || h.mysql == nil {
+		return
+	}
+	runtimeConfig := audit.RuntimeConfig
+	if runtimeConfig == nil {
+		runtimeConfig = effectiveExecutablePluginRuntimeConfig(item.RuntimeConfig)
+	}
+	record := mysqlstore.SearchCommandExecutionAudit{
+		RequestID:      requestID,
+		PluginType:     "search_command",
+		PluginCode:     item.PluginCode,
+		PluginVersion:  item.PluginVersion,
+		CommandName:    command.Name,
+		Runtime:        item.Runtime,
+		Interpreter:    textFromMap(runtimeConfig, "interpreter"),
+		TimeoutMS:      intFromRuntimeConfig(runtimeConfig, "timeout_ms"),
+		MaxInputRows:   intFromRuntimeConfig(runtimeConfig, "max_input_rows"),
+		MaxOutputBytes: intFromRuntimeConfig(runtimeConfig, "max_output_bytes"),
+		InputRows:      int64(audit.InputRows),
+		OutputRows:     int64(audit.OutputRows),
+		ElapsedMS:      audit.ElapsedMS,
+		Success:        audit.Success,
+		ErrorCode:      audit.ErrorCode,
+		ErrorMessage:   audit.ErrorMessage,
+		StdoutBytes:    int64(audit.StdoutBytes),
+		StderrBytes:    int64(audit.StderrBytes),
+	}
+	if err := h.mysql.SaveSearchCommandExecutionAudit(ctx, record); err != nil {
+		h.logger.Warn("save search command execution audit failed", "plugin_code", item.PluginCode, "error", err)
+	}
+}
+
+func intFromRuntimeConfig(config map[string]any, key string) int {
+	switch value := config[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(value))
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func (h *Handler) enabledSearchCommandPlugin(code string) (PluginImportResponse, bool) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return PluginImportResponse{}, false
+	}
+	item, ok := h.findPlugin("search_command", code, "")
+	return item, ok && isPluginEnabled(item.Status) && !productVisibleBuiltinPlugin("search_command", code)
+}
+
 type clickHouseStatsBackend struct {
 	client *ch.Client
 }
@@ -406,16 +1225,17 @@ func (b clickHouseStatsBackend) Stats(ctx context.Context, query plugin.SearchSt
 		return splstats.Result{}, fmt.Errorf("clickhouse client is required")
 	}
 	return b.client.Stats(ctx, ch.StatsQuery{
-		Index:     query.Index,
-		Keyword:   query.Keyword,
-		Field:     query.Field,
-		Value:     query.Value,
-		StartTime: query.StartTime,
-		EndTime:   query.EndTime,
-		Limit:     query.Limit,
-		Offset:    query.Offset,
-		Stats:     query.Stats,
-		HotFields: clickHouseHotFields(query.HotFields),
+		Index:        query.Index,
+		Keyword:      query.Keyword,
+		Field:        query.Field,
+		Value:        query.Value,
+		FieldFilters: clickHouseFieldFiltersFromPlugin(query.FieldFilters),
+		StartTime:    query.StartTime,
+		EndTime:      query.EndTime,
+		Limit:        query.Limit,
+		Offset:       query.Offset,
+		Stats:        query.Stats,
+		HotFields:    clickHouseHotFields(query.HotFields),
 	})
 }
 
@@ -429,15 +1249,16 @@ func (b memoryStatsBackend) Stats(ctx context.Context, query plugin.SearchStatsQ
 		store = memoryoutput.DefaultStore()
 	}
 	return store.Stats(memoryoutput.StatsQuery{
-		Index:     query.Index,
-		Keyword:   query.Keyword,
-		Field:     query.Field,
-		Value:     query.Value,
-		StartTime: query.StartTime,
-		EndTime:   query.EndTime,
-		Limit:     query.Limit,
-		Offset:    query.Offset,
-		Stats:     query.Stats,
+		Index:        query.Index,
+		Keyword:      query.Keyword,
+		Field:        query.Field,
+		Value:        query.Value,
+		FieldFilters: memoryFieldFiltersFromPlugin(query.FieldFilters),
+		StartTime:    query.StartTime,
+		EndTime:      query.EndTime,
+		Limit:        query.Limit,
+		Offset:       query.Offset,
+		Stats:        query.Stats,
 	}), nil
 }
 
@@ -445,6 +1266,46 @@ func searchPluginHotFields(fields []ch.HotField) []plugin.SearchHotField {
 	out := make([]plugin.SearchHotField, 0, len(fields))
 	for _, field := range fields {
 		out = append(out, plugin.SearchHotField{Name: field.Name, Type: field.Type, Searchable: field.Searchable, Aggregatable: field.Aggregatable, Aliases: field.Aliases})
+	}
+	return out
+}
+
+func searchPluginFieldFilters(filters []splquery.FieldFilter) []plugin.SearchFieldFilter {
+	out := make([]plugin.SearchFieldFilter, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, plugin.SearchFieldFilter{Field: filter.Field, Value: filter.Value})
+	}
+	return out
+}
+
+func clickHouseFieldFilters(filters []splquery.FieldFilter) []ch.FieldFilter {
+	out := make([]ch.FieldFilter, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, ch.FieldFilter{Field: filter.Field, Value: filter.Value})
+	}
+	return out
+}
+
+func clickHouseFieldFiltersFromPlugin(filters []plugin.SearchFieldFilter) []ch.FieldFilter {
+	out := make([]ch.FieldFilter, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, ch.FieldFilter{Field: filter.Field, Value: filter.Value})
+	}
+	return out
+}
+
+func memoryFieldFilters(filters []splquery.FieldFilter) []memoryoutput.FieldFilter {
+	out := make([]memoryoutput.FieldFilter, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, memoryoutput.FieldFilter{Field: filter.Field, Value: filter.Value})
+	}
+	return out
+}
+
+func memoryFieldFiltersFromPlugin(filters []plugin.SearchFieldFilter) []memoryoutput.FieldFilter {
+	out := make([]memoryoutput.FieldFilter, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, memoryoutput.FieldFilter{Field: filter.Field, Value: filter.Value})
 	}
 	return out
 }
@@ -487,17 +1348,18 @@ type IngestResponse struct {
 }
 
 type SearchQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
-	Q         string
-	Earliest  string
-	Latest    string
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []splquery.FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
+	Q            string
+	Earliest     string
+	Latest       string
 }
 
 func (q *SearchQuery) ApplyFilters(filters splquery.Filters) {
@@ -510,6 +1372,20 @@ func (q *SearchQuery) ApplyFilters(filters splquery.Filters) {
 	if filters.Field != "" {
 		q.Field = filters.Field
 		q.Value = filters.Value
+	}
+	if len(filters.FieldFilters) > 0 {
+		q.FieldFilters = filters.FieldFilters
+	}
+	q.NormalizeFieldFilters()
+}
+
+func (q *SearchQuery) NormalizeFieldFilters() {
+	if len(q.FieldFilters) == 0 && strings.TrimSpace(q.Field) != "" {
+		q.FieldFilters = []splquery.FieldFilter{{Field: q.Field, Value: q.Value}}
+	}
+	if len(q.FieldFilters) > 0 && strings.TrimSpace(q.Field) == "" {
+		q.Field = q.FieldFilters[0].Field
+		q.Value = q.FieldFilters[0].Value
 	}
 }
 
@@ -543,8 +1419,15 @@ type SearchResponse struct {
 	SearchCommand *SearchCommandMeta `json:"search_command,omitempty"`
 	Events        []SearchEvent      `json:"events,omitempty"`
 	Stats         *splstats.Result   `json:"stats,omitempty"`
+	Table         *SearchTableResult `json:"table,omitempty"`
 	Pagination    *Pagination        `json:"pagination,omitempty"`
 	Deadletters   []DeadletterRecord `json:"deadletters,omitempty"`
+}
+
+type SearchTableResult struct {
+	Fields []string         `json:"fields"`
+	Rows   []map[string]any `json:"rows"`
+	Limit  int              `json:"limit"`
 }
 
 type SearchCommandMeta struct {
@@ -560,7 +1443,7 @@ func (h *Handler) statsSearchCommandMetadata() *SearchCommandMeta {
 		if _, meta, err := h.reg.Get(plugin.TypeSearch, "stats", "1.0.0"); err == nil {
 			return &SearchCommandMeta{
 				PluginCode:    meta.Code,
-				PluginType:    string(meta.Type),
+				PluginType:    string(plugin.TypeSearchCommand),
 				PluginVersion: meta.Version,
 				Runtime:       meta.Runtime,
 				OutputMode:    firstNonEmpty(meta.Labels["output_mode"], "stats"),
@@ -569,7 +1452,7 @@ func (h *Handler) statsSearchCommandMetadata() *SearchCommandMeta {
 	}
 	return &SearchCommandMeta{
 		PluginCode:    "stats",
-		PluginType:    "search",
+		PluginType:    string(plugin.TypeSearchCommand),
 		PluginVersion: "1.0.0",
 		Runtime:       "go_builtin",
 		OutputMode:    "stats",
@@ -643,6 +1526,70 @@ func searchEventsFromEvents(events []*event.Event) []SearchEvent {
 		out = append(out, searchEventFromEvent(item))
 	}
 	return out
+}
+
+func eventRowsFromEvents(events []*event.Event) []map[string]any {
+	rows := make([]map[string]any, 0, len(events))
+	for _, item := range events {
+		if item == nil {
+			continue
+		}
+		metadata := copyMetadata(item.Metadata)
+		index := firstNonEmpty(metadataText(metadata, "index"), "app")
+		source := firstNonEmpty(item.Source.Name, metadataText(metadata, "source_name"))
+		sourcetype := firstNonEmpty(metadataText(metadata, "sourcetype"), metadataText(metadata, "parse_rule_name"))
+		row := copyFields(item.Fields)
+		applyDefaultHotFieldAliases(row)
+		row["_time"] = item.EventTime
+		row["time"] = formatSearchTime(item.EventTime)
+		row["event_time"] = item.EventTime
+		row["ingest_time"] = item.IngestTime
+		row["raw"] = item.Raw
+		row["_raw"] = item.Raw
+		row["event_id"] = item.EventID
+		row["index"] = index
+		row["source"] = source
+		row["source_name"] = source
+		row["sourcetype"] = sourcetype
+		row["parse_status"] = firstNonEmpty(metadataText(metadata, "parse_status"), "unparsed")
+		row["parse_rule_id"] = firstNonEmpty(metadataText(metadata, "parse_rule_id"), "")
+		row["parse_rule_name"] = firstNonEmpty(metadataText(metadata, "parse_rule_name"), sourcetype)
+		row["parse_error"] = firstNonEmpty(metadataText(metadata, "parse_error"), "")
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func applyDefaultHotFieldAliases(row map[string]any) {
+	if row == nil {
+		return
+	}
+	defaultAliases := map[string]string{
+		"src_ip": "src",
+		"dst_ip": "dst",
+	}
+	for source, alias := range defaultAliases {
+		value, ok := row[source]
+		if !ok {
+			continue
+		}
+		if _, exists := row[alias]; exists {
+			continue
+		}
+		row[alias] = value
+	}
+}
+
+func inferSearchTableFields(rows []map[string]any) []string {
+	if len(rows) == 0 {
+		return []string{}
+	}
+	keys := make([]string, 0, len(rows[0]))
+	for key := range rows[0] {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func searchEventFromEvent(item *event.Event) SearchEvent {
@@ -776,6 +1723,9 @@ func effectiveSearchSPL(query SearchQuery) string {
 }
 
 func searchParseErrorCode(input string, err error) string {
+	if err != nil && searchLooksLikeSearchCommand(input) {
+		return "SPL_COMMAND_VALIDATION_ERROR"
+	}
 	if err == nil || !searchLooksLikeStatsCommand(input) {
 		return "SPL_PARSE_ERROR"
 	}
@@ -801,6 +1751,19 @@ func searchLooksLikeStatsCommand(input string) bool {
 	}
 	_, command, ok := strings.Cut(raw, "|")
 	return ok && strings.HasPrefix(strings.TrimSpace(command), "stats ")
+}
+
+func searchLooksLikeSearchCommand(input string) bool {
+	raw := strings.ToLower(input)
+	for _, part := range strings.Split(raw, "|") {
+		command := strings.TrimSpace(part)
+		for _, name := range []string{"table ", "sort ", "head ", "dedup "} {
+			if strings.HasPrefix(command, name) || command == strings.TrimSpace(name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func searchTimeRange(query SearchQuery) *SearchTimeRange {
@@ -943,13 +1906,36 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func writeErrorCode(w http.ResponseWriter, status int, code string, message string) {
+	writeErrorCodeWithRequestID(w, status, code, message, newRequestID())
+}
+
+func writeErrorCodeWithRequestID(w http.ResponseWriter, status int, code string, message string, requestID string) {
+	if strings.TrimSpace(requestID) == "" {
+		requestID = newRequestID()
+	}
 	writeJSON(w, status, map[string]any{
 		"error": map[string]any{
 			"code":    code,
 			"message": message,
 		},
-		"request_id": newRequestID(),
+		"request_id": requestID,
 	})
+}
+
+func writeSearchCommandPluginError(w http.ResponseWriter, requestID string, err error) {
+	code, ok := searchCommandPluginExecutionErrorCode(err)
+	if !ok {
+		writeErrorCodeWithRequestID(w, http.StatusBadRequest, "SPL_COMMAND_VALIDATION_ERROR", err.Error(), requestID)
+		return
+	}
+	status := http.StatusBadRequest
+	if code == pluginExecTimeoutCode {
+		status = http.StatusGatewayTimeout
+	}
+	if code == pluginExecRuntimeNotReadyCode {
+		status = http.StatusInternalServerError
+	}
+	writeErrorCodeWithRequestID(w, status, code, err.Error(), requestID)
 }
 
 func defaultErrorCode(status int) string {

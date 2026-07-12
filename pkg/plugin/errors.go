@@ -6,6 +6,7 @@ type ErrorCode string
 
 const (
 	ErrInvalidConfig   ErrorCode = "INVALID_CONFIG"
+	ErrNoMatch         ErrorCode = "NO_MATCH"
 	ErrParseFailed     ErrorCode = "PARSE_FAILED"
 	ErrTransformFailed ErrorCode = "TRANSFORM_FAILED"
 	ErrEnrichFailed    ErrorCode = "ENRICH_FAILED"

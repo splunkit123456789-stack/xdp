@@ -33,39 +33,42 @@ type Config struct {
 }
 
 type SearchQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
-	HotFields []HotField
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
+	HotFields    []HotField
 }
 
 type StatsQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
-	Stats     splstats.Query
-	HotFields []HotField
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
+	Stats        splstats.Query
+	HotFields    []HotField
 }
 
 type TimelineQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Interval  string
-	HotFields []HotField
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Interval     string
+	HotFields    []HotField
 }
 
 type StatsResult = splstats.Result
@@ -83,6 +86,11 @@ type HotField struct {
 	Aliases      []string `json:"aliases,omitempty"`
 }
 
+type FieldFilter struct {
+	Field string
+	Value string
+}
+
 type IndexInfo struct {
 	IndexName       string    `json:"index_name"`
 	TableName       string    `json:"table_name"`
@@ -90,7 +98,27 @@ type IndexInfo struct {
 	LatestEventTime string    `json:"latest_event_time,omitempty"`
 	StorageBytes    uint64    `json:"storage_bytes"`
 	TTLDays         int       `json:"ttl_days"`
+	PhysicalTTLDays int       `json:"physical_ttl_days,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type IndexTrendPoint struct {
+	Date         string `json:"date"`
+	Rows         uint64 `json:"rows"`
+	StorageBytes uint64 `json:"storage_bytes"`
+}
+
+type IndexTrend struct {
+	IndexName             string            `json:"index_name"`
+	TableName             string            `json:"table_name"`
+	Points                []IndexTrendPoint `json:"points"`
+	CurrentRows           uint64            `json:"current_rows"`
+	CurrentStorageBytes   uint64            `json:"current_storage_bytes"`
+	RowsGrowth7d          int64             `json:"rows_growth_7d"`
+	StorageGrowthBytes7d  int64             `json:"storage_growth_bytes_7d"`
+	LatestEventTime       string            `json:"latest_event_time,omitempty"`
+	Source                string            `json:"source"`
+	SnapshotRetentionDays int               `json:"snapshot_retention_days,omitempty"`
 }
 
 const (
@@ -142,12 +170,16 @@ func (c *Client) InsertEvents(ctx context.Context, events []*event.Event) error 
 		if err != nil {
 			return err
 		}
+		hotFields, err := c.TableHotFields(ctx, index)
+		if err != nil {
+			return err
+		}
 		var body strings.Builder
 		body.WriteString("INSERT INTO ")
 		body.WriteString(table)
 		body.WriteString(" FORMAT JSONEachRow\n")
 		for _, e := range items {
-			row, err := eventToRow(e)
+			row, err := eventToRowMap(e, hotFields)
 			if err != nil {
 				return err
 			}
@@ -177,7 +209,7 @@ func (c *Client) Search(ctx context.Context, query SearchQuery) ([]*event.Event,
 	if err != nil {
 		return nil, err
 	}
-	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime, query.HotFields)
+	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime, query.HotFields)
 	offset := query.Offset
 	if offset < 0 {
 		offset = 0
@@ -209,7 +241,7 @@ func (c *Client) Count(ctx context.Context, query SearchQuery) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime, query.HotFields)
+	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime, query.HotFields)
 	stmt := fmt.Sprintf("SELECT count() AS total FROM %s WHERE %s FORMAT JSONEachRow", table, strings.Join(conditions, " AND "))
 	data, err := c.exec(ctx, stmt)
 	if err != nil {
@@ -326,6 +358,10 @@ func (c *Client) ListIndexes(ctx context.Context) ([]IndexInfo, error) {
 		info.Rows = metrics.Rows
 		info.LatestEventTime = metrics.LatestEventTime
 		info.StorageBytes = metrics.StorageBytes
+		if ttl, err := c.TableTTLDays(ctx, index); err == nil {
+			info.PhysicalTTLDays = ttl
+			info.TTLDays = ttl
+		}
 		items = append(items, info)
 	}
 	return items, nil
@@ -373,11 +409,30 @@ func (c *Client) indexMetrics(ctx context.Context, table string) (IndexInfo, err
 }
 
 func (c *Client) EnsureIndexTable(ctx context.Context, index string) error {
+	return c.EnsureIndexTableWithTTL(ctx, index, 30)
+}
+
+func (c *Client) EnsureIndexTableWithTTL(ctx context.Context, index string, ttlDays int) error {
 	_, table, err := c.indexTableName(index)
 	if err != nil {
 		return err
 	}
-	_, err = c.exec(ctx, indexTableDDL(table))
+	_, err = c.exec(ctx, indexTableDDL(table, ttlDays))
+	return err
+}
+
+func (c *Client) UpdateIndexTTL(ctx context.Context, index string, ttlDays int) error {
+	if ttlDays <= 0 {
+		return fmt.Errorf("ttl_days must be greater than 0")
+	}
+	_, table, err := c.indexTableName(index)
+	if err != nil {
+		return err
+	}
+	if err := c.EnsureIndexTableWithTTL(ctx, index, ttlDays); err != nil {
+		return err
+	}
+	_, err = c.exec(ctx, fmt.Sprintf("ALTER TABLE %s MODIFY TTL event_date + INTERVAL %d DAY DELETE", table, ttlDays))
 	return err
 }
 
@@ -402,6 +457,141 @@ func (c *Client) EnsureHotFields(ctx context.Context, index string, fields []Hot
 		}
 	}
 	return nil
+}
+
+func (c *Client) TableHotFields(ctx context.Context, index string) ([]HotField, error) {
+	_, table, err := c.indexTableName(index)
+	if err != nil {
+		return nil, err
+	}
+	tableName := strings.TrimPrefix(table, c.Database+".")
+	stmt := "SELECT name, type, default_kind FROM system.columns WHERE database = " + quote(c.Database) + " AND table = " + quote(tableName) + " FORMAT JSONEachRow"
+	data, err := c.exec(ctx, stmt)
+	if err != nil {
+		return nil, err
+	}
+	base := baseEventColumns()
+	fields := []HotField{}
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var row struct {
+			Name        string `json:"name"`
+			Type        string `json:"type"`
+			DefaultKind string `json:"default_kind"`
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(strings.TrimSpace(row.DefaultKind), "MATERIALIZED") {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(row.Name))
+		if _, ok := base[name]; ok {
+			continue
+		}
+		if _, err := safeIdentifier(name, "hot field"); err != nil {
+			continue
+		}
+		fields = append(fields, HotField{Name: name, Type: clickHouseTypeToHotFieldType(row.Type), Searchable: true, Aggregatable: true})
+	}
+	return fields, nil
+}
+
+func (c *Client) TableTTLDays(ctx context.Context, index string) (int, error) {
+	_, table, err := c.indexTableName(index)
+	if err != nil {
+		return 0, err
+	}
+	tableName := strings.TrimPrefix(table, c.Database+".")
+	stmt := "SELECT create_table_query FROM system.tables WHERE database = " + quote(c.Database) + " AND name = " + quote(tableName) + " FORMAT JSONEachRow"
+	data, err := c.exec(ctx, stmt)
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var row struct {
+			Query string `json:"create_table_query"`
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			return 0, err
+		}
+		if ttl := parseTTLDays(row.Query); ttl > 0 {
+			return ttl, nil
+		}
+	}
+	return 0, fmt.Errorf("ttl not found for index %s", index)
+}
+
+func (c *Client) IndexTrend(ctx context.Context, index string, days int) (IndexTrend, error) {
+	if days <= 0 {
+		days = 7
+	}
+	if days > 90 {
+		days = 90
+	}
+	if err := c.EnsureIndexTable(ctx, index); err != nil {
+		return IndexTrend{}, err
+	}
+	normalized, table, err := c.indexTableName(index)
+	if err != nil {
+		return IndexTrend{}, err
+	}
+	metrics, err := c.indexMetrics(ctx, table)
+	if err != nil {
+		return IndexTrend{}, err
+	}
+	stmt := fmt.Sprintf(`SELECT toString(event_date) AS date, count() AS rows FROM %s WHERE event_date >= today('Asia/Shanghai') - INTERVAL %d DAY GROUP BY event_date ORDER BY event_date ASC FORMAT JSONEachRow`, table, days-1)
+	data, err := c.exec(ctx, stmt)
+	if err != nil {
+		return IndexTrend{}, err
+	}
+	rowsByDate := map[string]uint64{}
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var row struct {
+			Date string `json:"date"`
+			Rows any    `json:"rows"`
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			return IndexTrend{}, err
+		}
+		rowsByDate[row.Date] = uint64FromAny(row.Rows)
+	}
+	points := make([]IndexTrendPoint, 0, days)
+	now := time.Now().In(storageLocation)
+	for i := days - 1; i >= 0; i-- {
+		date := now.AddDate(0, 0, -i).Format("2006-01-02")
+		rows := rowsByDate[date]
+		var storageBytes uint64
+		if metrics.Rows > 0 && rows > 0 {
+			storageBytes = uint64(float64(metrics.StorageBytes) * (float64(rows) / float64(metrics.Rows)))
+		}
+		points = append(points, IndexTrendPoint{Date: date, Rows: rows, StorageBytes: storageBytes})
+	}
+	var rowsGrowth int64
+	var storageGrowth int64
+	if len(points) > 0 {
+		rowsGrowth = int64(points[len(points)-1].Rows) - int64(points[0].Rows)
+		storageGrowth = int64(points[len(points)-1].StorageBytes) - int64(points[0].StorageBytes)
+	}
+	return IndexTrend{
+		IndexName:            normalized,
+		TableName:            strings.TrimPrefix(table, c.Database+"."),
+		Points:               points,
+		CurrentRows:          metrics.Rows,
+		CurrentStorageBytes:  metrics.StorageBytes,
+		RowsGrowth7d:         rowsGrowth,
+		StorageGrowthBytes7d: storageGrowth,
+		LatestEventTime:      metrics.LatestEventTime,
+		Source:               "live",
+	}, nil
 }
 
 func (c *Client) DropIndexTable(ctx context.Context, index string) error {
@@ -444,7 +634,7 @@ func buildStatsSQL(database string, query StatsQuery) (string, []string, error) 
 		selects = append(selects, expr+" AS "+alias)
 		fields = append(fields, agg.DisplayName())
 	}
-	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime, query.HotFields)
+	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime, query.HotFields)
 	stmt := fmt.Sprintf("SELECT %s FROM %s WHERE %s", strings.Join(selects, ", "), table, strings.Join(conditions, " AND "))
 	if len(groupAliases) > 0 {
 		stmt += " GROUP BY " + strings.Join(groupAliases, ", ")
@@ -463,7 +653,7 @@ func buildTimelineSQL(database string, query TimelineQuery) (string, error) {
 		return "", err
 	}
 	bucketExpr := timelineBucketExpression(query.Interval)
-	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime, query.HotFields)
+	conditions := buildWhereConditions(query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime, query.HotFields)
 	stmt := fmt.Sprintf(
 		"SELECT %s AS bucket, count() AS count FROM %s WHERE %s GROUP BY bucket ORDER BY bucket ASC FORMAT JSONEachRow",
 		bucketExpr,
@@ -486,7 +676,7 @@ func timelineBucketExpression(interval string) string {
 	}
 }
 
-func buildWhereConditions(keyword, field, value string, startTime time.Time, endTime time.Time, hotFields []HotField) []string {
+func buildWhereConditions(keyword, field, value string, fieldFilters []FieldFilter, startTime time.Time, endTime time.Time, hotFields []HotField) []string {
 	conditions := []string{"1 = 1"}
 	if !startTime.IsZero() {
 		conditions = append(conditions, "event_time >= "+quote(formatTime(startTime)))
@@ -497,16 +687,30 @@ func buildWhereConditions(keyword, field, value string, startTime time.Time, end
 	if keyword != "" {
 		conditions = append(conditions, "positionCaseInsensitive(raw, "+quote(keyword)+") > 0")
 	}
-	if field != "" {
-		if expr, ok := metadataStringColumn(field); ok {
-			conditions = append(conditions, expr+" = "+quote(value))
-		} else if hot, ok := resolveHotField(field, hotFields); ok && hot.Searchable {
-			conditions = append(conditions, hot.Name+" = "+quote(value))
-		} else {
-			conditions = append(conditions, "JSONExtractString(fields_json, "+quote(field)+") = "+quote(value))
-		}
+	for _, filter := range normalizedFieldFilters(field, value, fieldFilters) {
+		conditions = append(conditions, fieldCondition(filter.Field, filter.Value, hotFields))
 	}
 	return conditions
+}
+
+func normalizedFieldFilters(field, value string, filters []FieldFilter) []FieldFilter {
+	if len(filters) > 0 {
+		return filters
+	}
+	if strings.TrimSpace(field) == "" {
+		return nil
+	}
+	return []FieldFilter{{Field: field, Value: value}}
+}
+
+func fieldCondition(field, value string, hotFields []HotField) string {
+	if expr, ok := metadataStringColumn(field); ok {
+		return expr + " = " + quote(value)
+	}
+	if hot, ok := resolveHotField(field, hotFields); ok && hot.Searchable {
+		return hot.Name + " = " + quote(value)
+	}
+	return "JSONExtractString(fields_json, " + quote(field) + ") = " + quote(value)
 }
 
 func renderAggregateExpr(agg splstats.Aggregate, hotFields []HotField) (string, error) {
@@ -790,18 +994,17 @@ func hotFieldStatements(table string, fields []HotField) []string {
 }
 
 func hotFieldColumnDDL(field HotField) string {
-	extract := "JSONExtractString(fields_json, " + quote(field.Name) + ")"
 	switch field.Type {
 	case "uint64":
-		return "UInt64 MATERIALIZED toUInt64OrZero(" + extract + ")"
+		return "UInt64 DEFAULT 0"
 	case "float64":
-		return "Float64 MATERIALIZED toFloat64OrZero(" + extract + ")"
+		return "Float64 DEFAULT 0"
 	case "bool":
-		return "UInt8 MATERIALIZED if(lower(" + extract + ") IN ('true', '1', 'yes'), 1, 0)"
+		return "UInt8 DEFAULT 0"
 	case "low_cardinality_string":
-		return "LowCardinality(String) MATERIALIZED " + extract
+		return "LowCardinality(String) DEFAULT ''"
 	default:
-		return "String MATERIALIZED " + extract
+		return "String DEFAULT ''"
 	}
 }
 
@@ -820,7 +1023,10 @@ func hotFieldIndexName(field string) string {
 	return name
 }
 
-func indexTableDDL(table string) string {
+func indexTableDDL(table string, ttlDays int) string {
+	if ttlDays <= 0 {
+		ttlDays = 30
+	}
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s
 (
     index_name LowCardinality(String),
@@ -854,8 +1060,8 @@ func indexTableDDL(table string) string {
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(event_date)
 ORDER BY (event_time, event_id)
-TTL event_date + INTERVAL 30 DAY DELETE
-SETTINGS index_granularity = 8192`, table)
+TTL event_date + INTERVAL %d DAY DELETE
+SETTINGS index_granularity = 8192`, table, ttlDays)
 }
 
 func normalizedLimit(limit int) int {
@@ -921,6 +1127,29 @@ type eventRow struct {
 	ErrorsJSON      string   `json:"errors_json"`
 }
 
+func eventToRowMap(e *event.Event, hotFields []HotField) (map[string]any, error) {
+	row, err := eventToRow(e)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(row)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return nil, err
+	}
+	for _, field := range hotFields {
+		value, ok := e.Fields[field.Name]
+		if !ok {
+			continue
+		}
+		out[field.Name] = coerceHotFieldValue(value, field.Type)
+	}
+	return out, nil
+}
+
 func eventToRow(e *event.Event) (eventRow, error) {
 	index, err := NormalizeIndexName(stringValue(e.Metadata["index"], defaultIndexName))
 	if err != nil {
@@ -963,6 +1192,19 @@ func eventToRow(e *event.Event) (eventRow, error) {
 		Tags:            e.Tags,
 		ErrorsJSON:      string(errorsJSON),
 	}, nil
+}
+
+func coerceHotFieldValue(value any, fieldType string) any {
+	switch normalizeHotFieldType(fieldType) {
+	case "uint64":
+		return uint64FromAny(value)
+	case "float64":
+		return float64FromAny(value)
+	case "bool":
+		return boolToUInt8(value)
+	default:
+		return fmt.Sprint(value)
+	}
 }
 
 func (r eventRow) toEvent() *event.Event {
@@ -1064,6 +1306,90 @@ func uint64FromAny(value any) uint64 {
 		text := fmt.Sprint(value)
 		n, _ := strconv.ParseUint(text, 10, 64)
 		return n
+	}
+}
+
+func float64FromAny(value any) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	case json.Number:
+		n, _ := strconv.ParseFloat(v.String(), 64)
+		return n
+	case string:
+		n, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return n
+	default:
+		n, _ := strconv.ParseFloat(fmt.Sprint(value), 64)
+		return n
+	}
+}
+
+func boolToUInt8(value any) uint8 {
+	switch v := value.(type) {
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y", "on":
+			return 1
+		}
+	}
+	if uint64FromAny(value) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func clickHouseTypeToHotFieldType(value string) string {
+	text := strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.Contains(text, "uint"), strings.Contains(text, "int"):
+		return "uint64"
+	case strings.Contains(text, "float"), strings.Contains(text, "decimal"):
+		return "float64"
+	case strings.Contains(text, "lowcardinality"):
+		return "low_cardinality_string"
+	default:
+		return "string"
+	}
+}
+
+func parseTTLDays(query string) int {
+	upper := strings.ToUpper(query)
+	marker := "INTERVAL "
+	pos := strings.Index(upper, marker)
+	if pos < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(upper[pos+len(marker):])
+	parts := strings.Fields(rest)
+	if len(parts) < 2 || parts[1] != "DAY" {
+		return 0
+	}
+	days, _ := strconv.Atoi(parts[0])
+	return days
+}
+
+func baseEventColumns() map[string]struct{} {
+	return map[string]struct{}{
+		"index_name": {}, "event_id": {}, "event_date": {}, "event_time": {}, "ingest_time": {},
+		"pipeline_id": {}, "pipeline_version": {}, "source_type": {}, "source_name": {},
+		"source_host": {}, "source_ip": {}, "sourcetype": {}, "parse_status": {},
+		"parse_rule_id": {}, "parse_rule_name": {}, "parse_error": {}, "parsed_at": {},
+		"vendor": {}, "product": {}, "raw": {}, "raw_length": {}, "fields_json": {},
+		"labels_json": {}, "tags": {}, "errors_json": {}, "has_error": {}, "created_at": {},
 	}
 }
 

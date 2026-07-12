@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -89,13 +91,13 @@ func TestPluginImportRegistersManifestAndListsPlugin(t *testing.T) {
 	body := pluginZipBody(t, `{
 		"plugin_code": "demo-kafka",
 		"plugin_type": "input",
-		"version": "1.2.3",
+		"plugin_version": "1.2.3",
 		"name": "Demo Kafka Input",
 		"description": "Kafka input plugin imported from Web",
 		"runtime": "go_builtin",
 		"entrypoint": "runtime/plugin",
-		"min_platform_version": "0.3.0",
-		"config_schema": {"required": ["brokers", "topic"]},
+		"min_platform_version": "0.1.0",
+		"config_schema": {"type":"object","required": ["brokers", "topic"], "properties": {"brokers": {"type":"array","items":{"type":"string"}}, "topic": {"type":"string"}}},
 		"ui_schema": {"groups": [{"title": "Kafka", "fields": ["brokers", "topic"]}]},
 		"input_schema": {"mode": "stream"},
 		"output_schema": {"fields": ["raw"]},
@@ -164,7 +166,7 @@ func TestPluginImportRegistersManifestAndListsPlugin(t *testing.T) {
 	}
 }
 
-func TestPluginImportRejectsMismatchedType(t *testing.T) {
+func TestPluginImportUsesManifestTypeWhenRequestTypeDiffers(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "false")
 
@@ -172,10 +174,10 @@ func TestPluginImportRejectsMismatchedType(t *testing.T) {
 	body := pluginZipBody(t, `{
 		"plugin_code": "demo-parser",
 		"plugin_type": "parser",
-		"version": "1.0.0",
+		"plugin_version": "1.0.0",
 		"name": "Demo Parser",
 		"runtime": "go_builtin",
-		"config_schema": {},
+		"config_schema": {"type":"object","properties":{}},
 		"ui_schema": {}
 	}`)
 
@@ -183,7 +185,16 @@ func TestPluginImportRejectsMismatchedType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/zip")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	assertErrorResponse(t, rec, http.StatusBadRequest, "PLUGIN_TYPE_MISMATCH")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("import status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var imported PluginImportResponse
+	if err := json.NewDecoder(rec.Body).Decode(&imported); err != nil {
+		t.Fatalf("decode imported plugin: %v", err)
+	}
+	if imported.PluginType != "parser" || imported.PluginCode != "demo-parser" {
+		t.Fatalf("imported plugin should use manifest identity, got %#v", imported)
+	}
 }
 
 func TestListPluginsOnlyExposesProductVisiblePluginTypes(t *testing.T) {
@@ -192,24 +203,29 @@ func TestListPluginsOnlyExposesProductVisiblePluginTypes(t *testing.T) {
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		Plugins []PluginImportResponse `json:"plugins"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
 	seen := map[string]bool{}
-	for _, item := range body.Plugins {
-		seen[item.PluginType+"/"+item.PluginCode] = true
-		if item.PluginType == "spl_function" {
-			t.Fatalf("spl_function should not be exposed in plugin management: %+v", item)
+	for _, pluginType := range []string{"input", "parser", "search_command"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins?plugin_type="+pluginType, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", pluginType, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Plugins []PluginImportResponse `json:"plugins"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range body.Plugins {
+			if item.PluginType != pluginType {
+				t.Fatalf("requested %s but got %+v", pluginType, item)
+			}
+			seen[item.PluginType+"/"+item.PluginCode] = true
+			if item.PluginType == "spl_function" {
+				t.Fatalf("spl_function should not be exposed in plugin management: %+v", item)
+			}
 		}
 	}
 	for _, key := range []string{"input/syslog", "parser/regex", "search_command/stats"} {
@@ -321,7 +337,7 @@ func TestLoginAndAuthFailuresReturnStructuredErrors(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	assertErrorResponse(t, rec, http.StatusUnauthorized, "INVALID_CREDENTIALS")
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins?plugin_type=input", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assertErrorResponse(t, rec, http.StatusUnauthorized, "UNAUTHORIZED")
@@ -373,6 +389,79 @@ func TestListIndexesPaginatesResults(t *testing.T) {
 	}
 	if response.Pagination.Page != 2 || response.Pagination.PageSize != 10 || response.Pagination.Total != 25 || response.Pagination.TotalPages != 3 {
 		t.Fatalf("pagination = %#v, want page=2 page_size=10 total=25 total_pages=3", response.Pagination)
+	}
+}
+
+func TestWriterRuntimeProxy(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	writer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/writer/runtime" {
+			t.Fatalf("writer path = %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":                "running",
+			"output_topic":          "xdp.output.default",
+			"batch_size":            100,
+			"total_events":          200,
+			"failed_events":         0,
+			"deadletter_events":     0,
+			"total_batches":         2,
+			"failure_rate":          0,
+			"eps":                   123.45,
+			"p95_ingest_latency_ms": 18,
+		})
+	}))
+	defer writer.Close()
+	t.Setenv("XDP_WRITER_BASE_URL", writer.URL)
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/writer/runtime", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("writer runtime status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Status             string  `json:"status"`
+		OutputTopic        string  `json:"output_topic"`
+		BatchSize          int     `json:"batch_size"`
+		TotalEvents        uint64  `json:"total_events"`
+		FailureRate        float64 `json:"failure_rate"`
+		EPS                float64 `json:"eps"`
+		P95IngestLatencyMS int64   `json:"p95_ingest_latency_ms"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode writer runtime: %v", err)
+	}
+	if response.Status != "running" || response.OutputTopic != "xdp.output.default" || response.BatchSize != 100 || response.TotalEvents != 200 || response.EPS <= 0 || response.P95IngestLatencyMS != 18 {
+		t.Fatalf("writer runtime response = %#v", response)
+	}
+}
+
+func TestWriterRuntimeProxyUnavailable(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_WRITER_BASE_URL", "http://127.0.0.1:1")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/writer/runtime", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("writer runtime fallback status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode writer runtime fallback: %v", err)
+	}
+	if response.Status != "unknown" || response.Error == "" {
+		t.Fatalf("writer runtime fallback = %#v", response)
 	}
 }
 
@@ -434,7 +523,7 @@ func TestInvalidBearerTokensAreRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins?plugin_type=input", nil)
 			req.Header.Set(tc.header, tc.value)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -467,7 +556,7 @@ func TestAuthDisabledAllowsDeveloperModeAccess(t *testing.T) {
 		t.Fatalf("auth disabled response = %#v", auth)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins?plugin_type=input", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -560,7 +649,7 @@ func TestSavedSearchFavoritesLifecycle(t *testing.T) {
 	}
 }
 
-func TestDefaultSavedSearchesAreListed(t *testing.T) {
+func TestDefaultSavedSearchesAreEmpty(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "true")
 	t.Setenv("XDP_API_TOKEN", "test-token")
@@ -583,11 +672,8 @@ func TestDefaultSavedSearchesAreListed(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
 		t.Fatalf("decode default saved search list: %v", err)
 	}
-	if len(list.SavedSearches) != 2 {
-		t.Fatalf("default saved searches count = %d, items = %#v", len(list.SavedSearches), list.SavedSearches)
-	}
-	if !savedSearchListContains(list.SavedSearches, "s-1") || !savedSearchListContains(list.SavedSearches, "s-2") {
-		t.Fatalf("default saved searches missing s-1/s-2: %#v", list.SavedSearches)
+	if len(list.SavedSearches) != 0 {
+		t.Fatalf("default saved searches count = %d, want 0, items = %#v", len(list.SavedSearches), list.SavedSearches)
 	}
 }
 
@@ -612,7 +698,7 @@ func TestProtectedAPIAllowsBearerAndXAPIToken(t *testing.T) {
 
 	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins?plugin_type=input", nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -620,7 +706,7 @@ func TestProtectedAPIAllowsBearerAndXAPIToken(t *testing.T) {
 		t.Fatalf("bearer status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/plugins?plugin_type=input", nil)
 	req.Header.Set("X-API-Token", "test-token")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -805,6 +891,77 @@ func TestSyslogRuntimePipelineWithoutParseRuleUsesStandardPlugins(t *testing.T) 
 	t.Fatalf("runtime pipelines missing no-rule syslog pipeline: %#v", response.Pipelines)
 }
 
+func TestKafkaRuntimePipelineUsesKafkaInputPlugin(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	importPluginForTest(t, handler, `{
+		"plugin_code": "kafka",
+		"plugin_type": "input",
+		"plugin_version": "1.0.0",
+		"name": "Kafka Input",
+		"runtime": "go_builtin",
+		"config_schema": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled"],
+			"properties": {
+				"brokers": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+				"topic": {"type": "string", "minLength": 1},
+				"consumer_group": {"type": "string", "minLength": 1},
+				"start_offset": {"type": "string", "enum": ["earliest", "latest"]},
+				"security_protocol": {"type": "string", "enum": ["PLAINTEXT"]},
+				"encoding": {"type": "string", "enum": ["UTF-8"]},
+				"log_filter_enabled": {"type": "boolean"}
+			}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/kafka/enable?plugin_type=input", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable kafka plugin status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := `{"name":"Kafka Audit","plugin_code":"kafka","status":"active","plugin_config":{"brokers":["127.0.0.1:9092"],"topic":"audit-events","consumer_group":"xdp-agent","start_offset":"earliest","security_protocol":"PLAINTEXT","encoding":"UTF-8","log_filter_enabled":false}}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save kafka datasource status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/runtime/pipelines", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runtime pipelines status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Pipelines []pipeline.Pipeline `json:"pipelines"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode runtime pipelines: %v", err)
+	}
+	for _, pipe := range response.Pipelines {
+		if pipe.Metadata.ID != "pipe_kafka_audit" {
+			continue
+		}
+		if pipe.Spec.Source.Plugin != "kafka" || pipe.Spec.Source.Version != "1.0.0" {
+			t.Fatalf("kafka runtime source = %#v", pipe.Spec.Source)
+		}
+		if pipe.Spec.Source.Config["topic"] != "audit-events" || pipe.Spec.Source.Config["consumer_group"] != "xdp-agent" {
+			t.Fatalf("kafka source config = %#v", pipe.Spec.Source.Config)
+		}
+		return
+	}
+	t.Fatalf("runtime pipelines missing kafka pipeline: %#v", response.Pipelines)
+}
+
 func TestDefaultDataSourcesDoNotSeedLegacyFirewallSyslog(t *testing.T) {
 	sources := defaultDataSources()
 	for _, source := range sources {
@@ -867,6 +1024,35 @@ func TestSaveAndDeleteIndexConfig(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("indexes = %#v, want audit", list.Indexes)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/indexes/audit", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get index status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var detail IndexSummary
+	if err := json.NewDecoder(rec.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode index detail: %v", err)
+	}
+	if detail.IndexName != "audit" || detail.TTLDays != 7 {
+		t.Fatalf("index detail = %#v", detail)
+	}
+
+	updateBody := `{"ttl_days":14,"status":"disabled"}`
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/indexes/audit", strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update index status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode updated index: %v", err)
+	}
+	if detail.IndexName != "audit" || detail.TTLDays != 14 || detail.Status != "disabled" {
+		t.Fatalf("updated index detail = %#v", detail)
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/indexes?index=audit", nil)
@@ -963,6 +1149,58 @@ func TestSaveIndexConfigValidatesRequiredFields(t *testing.T) {
 	}
 }
 
+func TestIndexTrendFromSnapshotsResponseContract(t *testing.T) {
+	points := []IndexTrendPoint{
+		{Date: "2026-07-10", Rows: 10, StorageBytes: 1000},
+		{Date: "2026-07-11", Rows: 15, StorageBytes: 1600},
+	}
+	trend := indexTrendFromSnapshotPoints("audit", "events_audit", points, "2026-07-11 10:00:00", 90)
+	if trend.IndexName != "audit" || trend.TableName != "events_audit" {
+		t.Fatalf("trend identity = %#v", trend)
+	}
+	if trend.Source != "snapshot" {
+		t.Fatalf("trend source = %q, want snapshot", trend.Source)
+	}
+	if trend.CurrentRows != 15 || trend.CurrentStorageBytes != 1600 {
+		t.Fatalf("current trend = %#v", trend)
+	}
+	if trend.RowsGrowth7d != 5 || trend.StorageGrowthBytes7d != 600 {
+		t.Fatalf("growth trend = %#v", trend)
+	}
+	if trend.SnapshotRetentionDays != 90 {
+		t.Fatalf("snapshot retention days = %d, want 90", trend.SnapshotRetentionDays)
+	}
+}
+
+func TestIndexSnapshotRetentionDaysDefaultsAndEnvOverride(t *testing.T) {
+	t.Setenv("XDP_INDEX_SNAPSHOT_RETENTION_DAYS", "")
+	if got := indexSnapshotRetentionDays(); got != 90 {
+		t.Fatalf("default retention days = %d, want 90", got)
+	}
+	t.Setenv("XDP_INDEX_SNAPSHOT_RETENTION_DAYS", "30")
+	if got := indexSnapshotRetentionDays(); got != 30 {
+		t.Fatalf("env retention days = %d, want 30", got)
+	}
+	t.Setenv("XDP_INDEX_SNAPSHOT_RETENTION_DAYS", "0")
+	if got := indexSnapshotRetentionDays(); got != 90 {
+		t.Fatalf("zero retention days = %d, want 90", got)
+	}
+}
+
+func TestSampleIndexSnapshotsRequiresClickHouseAndMySQL(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/indexes/snapshots", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("snapshot status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSearchAPIStatsP0ResponseContract(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "false")
@@ -1005,7 +1243,7 @@ func TestSearchAPIStatsP0ResponseContract(t *testing.T) {
 	if response.Mode != "stats" || response.SPL != spl || response.Index != index {
 		t.Fatalf("response contract = %#v", response)
 	}
-	if response.Command.PluginCode != "stats" || response.Command.PluginType != "search" || response.Command.PluginVersion != "1.0.0" || response.Command.Runtime != "go_builtin" || response.Command.OutputMode != "stats" {
+	if response.Command.PluginCode != "stats" || response.Command.PluginType != "search_command" || response.Command.PluginVersion != "1.0.0" || response.Command.Runtime != "go_builtin" || response.Command.OutputMode != "stats" {
 		t.Fatalf("search command contract = %#v", response.Command)
 	}
 	for _, want := range []string{"service", "action", "total", "total_bytes", "avg_bytes", "min_bytes", "max_bytes"} {
@@ -1019,6 +1257,244 @@ func TestSearchAPIStatsP0ResponseContract(t *testing.T) {
 	row := response.Stats.Rows[0]
 	if row["service"] != "api" || row["action"] != "allow" || row["total"] != float64(2) || row["total_bytes"] != float64(300) || row["avg_bytes"] != float64(150) {
 		t.Fatalf("first stats row = %#v", row)
+	}
+}
+
+func TestSearchAPITableSortHeadCommandPipeline(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	enableSearchCommandPluginsForTest(t, handler, "table", "sort", "head")
+	index := "p1cmdtable"
+	appendSearchEventAt(index, "api", "allow", 100, time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+	appendSearchEventAt(index, "worker", "deny", 300, time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC))
+	appendSearchEventAt(index, "batch", "allow", 200, time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC))
+
+	spl := `index=p1cmdtable | table _time service action bytes | sort - bytes | head 2`
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl)+"&limit=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Mode    string `json:"mode"`
+		Command struct {
+			PluginCode string `json:"plugin_code"`
+			PluginType string `json:"plugin_type"`
+			OutputMode string `json:"output_mode"`
+		} `json:"search_command"`
+		Table struct {
+			Fields []string         `json:"fields"`
+			Rows   []map[string]any `json:"rows"`
+		} `json:"table"`
+		Pagination Pagination `json:"pagination"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if response.Mode != "table" || response.Command.PluginCode != "table" || response.Command.PluginType != "search_command" || response.Command.OutputMode != "table" {
+		t.Fatalf("response contract = %#v", response)
+	}
+	if !reflect.DeepEqual(response.Table.Fields, []string{"_time", "service", "action", "bytes"}) {
+		t.Fatalf("fields = %#v", response.Table.Fields)
+	}
+	if len(response.Table.Rows) != 2 || response.Pagination.Returned != 2 || response.Pagination.Total != 2 {
+		t.Fatalf("rows/pagination = %#v / %#v", response.Table.Rows, response.Pagination)
+	}
+	if response.Table.Rows[0]["service"] != "worker" || response.Table.Rows[0]["bytes"] != float64(300) {
+		t.Fatalf("first row = %#v", response.Table.Rows[0])
+	}
+	if response.Table.Rows[1]["service"] != "batch" || response.Table.Rows[1]["bytes"] != float64(200) {
+		t.Fatalf("second row = %#v", response.Table.Rows[1])
+	}
+}
+
+func TestSearchAPITableCommandUsesDefaultHotFieldAliases(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	enableSearchCommandPluginsForTest(t, handler, "table", "sort", "head")
+	index := "p1cmdalias"
+	now := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	e := event.New("src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048", event.Source{Type: "syslog", Name: "Alias Syslog"}, now)
+	e.Metadata["index"] = index
+	e.Fields["src_ip"] = "10.0.1.8"
+	e.Fields["dst_ip"] = "172.16.0.4"
+	e.Fields["action"] = "deny"
+	e.Fields["bytes"] = 2048
+	memoryoutput.DefaultStore().Append(e)
+
+	spl := `index=p1cmdalias | table src action bytes | sort - bytes | head 10`
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl)+"&limit=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Mode  string `json:"mode"`
+		Table struct {
+			Fields []string         `json:"fields"`
+			Rows   []map[string]any `json:"rows"`
+		} `json:"table"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if response.Mode != "table" || !reflect.DeepEqual(response.Table.Fields, []string{"src", "action", "bytes"}) {
+		t.Fatalf("response table = %#v", response)
+	}
+	if len(response.Table.Rows) != 1 {
+		t.Fatalf("rows = %#v", response.Table.Rows)
+	}
+	if response.Table.Rows[0]["src"] != "10.0.1.8" || response.Table.Rows[0]["action"] != "deny" || response.Table.Rows[0]["bytes"] != float64(2048) {
+		t.Fatalf("alias row = %#v", response.Table.Rows[0])
+	}
+}
+
+func TestSearchAPIStatsThenSortHeadTablePipeline(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	enableSearchCommandPluginsForTest(t, handler, "sort", "head", "table")
+	index := "p1cmdstats"
+	appendSearchEventAt(index, "api", "allow", 100, time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+	appendSearchEventAt(index, "api", "allow", 200, time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC))
+	appendSearchEventAt(index, "worker", "deny", 50, time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC))
+
+	spl := `index=p1cmdstats | stats count as total sum(bytes) as total_bytes by service | sort - total_bytes | head 1 | table service total_bytes`
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl)+"&limit=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Mode  string `json:"mode"`
+		Table struct {
+			Fields []string         `json:"fields"`
+			Rows   []map[string]any `json:"rows"`
+		} `json:"table"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if response.Mode != "table" || !reflect.DeepEqual(response.Table.Fields, []string{"service", "total_bytes"}) {
+		t.Fatalf("response = %#v", response)
+	}
+	if len(response.Table.Rows) != 1 || response.Table.Rows[0]["service"] != "api" || response.Table.Rows[0]["total_bytes"] != float64(300) {
+		t.Fatalf("rows = %#v", response.Table.Rows)
+	}
+}
+
+func TestSearchAPISortDedupTableCommandPipeline(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	enableSearchCommandPluginsForTest(t, handler, "sort", "dedup", "table")
+	index := "p1cmddedup"
+	appendSearchEventAt(index, "api", "deny", 100, time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+	appendSearchEventAt(index, "api", "deny", 300, time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC))
+	appendSearchEventAt(index, "worker", "allow", 200, time.Date(2026, 6, 27, 11, 0, 0, 0, time.UTC))
+
+	spl := `index=p1cmddedup | sort - _time | dedup service action | table service action bytes`
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl)+"&limit=10", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Mode  string `json:"mode"`
+		Table struct {
+			Fields []string         `json:"fields"`
+			Rows   []map[string]any `json:"rows"`
+		} `json:"table"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if response.Mode != "table" || len(response.Table.Rows) != 2 {
+		t.Fatalf("response = %#v", response)
+	}
+	if response.Table.Rows[0]["service"] != "api" || response.Table.Rows[0]["bytes"] != float64(300) {
+		t.Fatalf("dedup should keep newest api row, got %#v", response.Table.Rows[0])
+	}
+}
+
+func TestSearchAPIRequiresImportedSearchCommandPlugin(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	appendSearchEventAt("p1cmdmissing", "api", "allow", 100, time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(`index=p1cmdmissing | table service bytes`), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.Error.Code != "SPL_COMMAND_VALIDATION_ERROR" || !strings.Contains(response.Error.Message, "search command plugin table is not enabled") {
+		t.Fatalf("error = %#v", response.Error)
+	}
+}
+
+func TestSearchAPICommandValidationErrorsUseStableCode(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	tests := []string{
+		`index=app | table`,
+		`index=app | sort`,
+		`index=app | head 0`,
+		`index=app | dedup`,
+	}
+	for _, spl := range tests {
+		t.Run(spl, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q="+url.QueryEscape(spl), nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("search status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if response.Error.Code != "SPL_COMMAND_VALIDATION_ERROR" {
+				t.Fatalf("code = %q, want SPL_COMMAND_VALIDATION_ERROR", response.Error.Code)
+			}
+		})
 	}
 }
 
@@ -1107,6 +1583,33 @@ func TestStatsSearchPluginIsRegistered(t *testing.T) {
 	}
 	if meta.OutputSchema["mode"] != "stats" {
 		t.Fatalf("stats output schema = %#v", meta.OutputSchema)
+	}
+}
+
+func TestSeedableBuiltinPluginMetadataOnlyIncludesProductVisibleBuiltins(t *testing.T) {
+	items := []plugin.Metadata{
+		{Type: plugin.TypeInput, Code: "syslog", Version: "1.0.0"},
+		{Type: plugin.TypeInput, Code: "kafka", Version: "1.0.0"},
+		{Type: plugin.TypeParser, Code: "regex", Version: "1.0.0"},
+		{Type: plugin.TypeParser, Code: "json-parser", Version: "1.0.0"},
+		{Type: plugin.TypeSearch, Code: "stats", Version: "1.0.0"},
+		{Type: plugin.TypeSearch, Code: "table", Version: "1.0.0"},
+	}
+
+	filtered := seedableBuiltinPluginMetadata(items)
+	seen := map[string]bool{}
+	for _, item := range filtered {
+		seen[string(item.Type)+"/"+item.Code] = true
+	}
+	for _, key := range []string{"input/syslog", "parser/regex", "search_command/stats"} {
+		if !seen[key] {
+			t.Fatalf("seedable builtins missing %s: %#v", key, seen)
+		}
+	}
+	for _, key := range []string{"input/kafka", "parser/json-parser", "search_command/table"} {
+		if seen[key] {
+			t.Fatalf("external plugin %s must not be seeded: %#v", key, seen)
+		}
 	}
 }
 
@@ -1771,6 +2274,71 @@ func appendSearchEventWithSource(index string, source string, action string, byt
 	e.Fields["action"] = action
 	e.Fields["bytes"] = bytesValue
 	memoryoutput.DefaultStore().Append(e)
+}
+
+func enableSearchCommandPluginsForTest(t *testing.T, handler http.Handler, codes ...string) {
+	t.Helper()
+	for _, code := range codes {
+		body := pluginZipFromDir(t, "../../../../docs/plugins/"+code+"-search-command-sample")
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/import?plugin_type=search_command", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/zip")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("import %s status = %d, body = %s", code, rec.Code, rec.Body.String())
+		}
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/plugins/"+code+"/enable?plugin_type=search_command", nil)
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("enable %s status = %d, body = %s", code, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func pluginZipFromDir(t *testing.T, dir string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		header.Method = zip.Deflate
+		w, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("zip plugin dir %s: %v", dir, err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close plugin zip: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func hasFieldSummary(items []FieldSummary, name string) bool {

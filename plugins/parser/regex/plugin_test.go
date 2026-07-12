@@ -112,7 +112,7 @@ func TestProcessExtractsNamedFieldsAndMarksParsed(t *testing.T) {
 	}
 }
 
-func TestProcessReturnsParseFailedOnNoMatch(t *testing.T) {
+func TestProcessReturnsNoMatchWithoutFailureMetadata(t *testing.T) {
 	parser := New()
 	config := map[string]any{
 		"source_field":  "raw",
@@ -129,16 +129,16 @@ func TestProcessReturnsParseFailedOnNoMatch(t *testing.T) {
 	missed := event.New("dst=172.16.0.4 action=deny", event.Source{Type: "syslog"}, time.Now().UTC())
 	result, err := parser.Process(testProcessContext{}, missed)
 	var pluginErr *plugin.PluginError
-	if !errors.As(err, &pluginErr) || pluginErr.Code != plugin.ErrParseFailed {
-		t.Fatalf("Process(no match) error = %v, want PARSE_FAILED", err)
+	if !errors.As(err, &pluginErr) || pluginErr.Code != plugin.ErrNoMatch {
+		t.Fatalf("Process(no match) error = %v, want NO_MATCH", err)
 	}
 	if len(result.Fields) != 0 {
 		t.Fatalf("Fields after no match = %#v, want empty", result.Fields)
 	}
-	if result.Metadata["parse_status"] != "parse_failed" {
-		t.Fatalf("parse_status = %#v, want parse_failed", result.Metadata["parse_status"])
+	if result.Metadata["parse_status"] != "unparsed" {
+		t.Fatalf("parse_status = %#v, want unchanged unparsed state", result.Metadata["parse_status"])
 	}
-	if result.Metadata["parse_error"] == "" {
-		t.Fatalf("parse_error = %#v, want non-empty", result.Metadata["parse_error"])
+	if result.Metadata["parse_error"] != "" {
+		t.Fatalf("parse_error = %#v, want empty for a rule miss", result.Metadata["parse_error"])
 	}
 }

@@ -25,6 +25,29 @@ func TestParseIndexFieldSearch(t *testing.T) {
 	}
 }
 
+func TestParseIndexMultipleFieldSearch(t *testing.T) {
+	query, err := Parse(`index=json_p1 service=checkout parse_status=parsed level="warn"`)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if query.Filters.Index != "json_p1" || query.Filters.Field != "service" || query.Filters.Value != "checkout" {
+		t.Fatalf("legacy filters = %#v", query.Filters)
+	}
+	want := []FieldFilter{
+		{Field: "service", Value: "checkout"},
+		{Field: "parse_status", Value: "parsed"},
+		{Field: "level", Value: "warn"},
+	}
+	if len(query.Filters.FieldFilters) != len(want) {
+		t.Fatalf("field filters = %#v, want %#v", query.Filters.FieldFilters, want)
+	}
+	for i := range want {
+		if query.Filters.FieldFilters[i] != want[i] {
+			t.Fatalf("field filters = %#v, want %#v", query.Filters.FieldFilters, want)
+		}
+	}
+}
+
 func TestParseIndexStatsPipe(t *testing.T) {
 	query, err := Parse("index=a | stats count as total by service")
 	if err != nil {
@@ -44,6 +67,45 @@ func TestParseIndexStatsPipe(t *testing.T) {
 	}
 }
 
+func TestParseSearchCommandPipeline(t *testing.T) {
+	query, err := Parse("index=audit | table _time service action bytes | sort - bytes | head 10 | dedup service action")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if query.Filters.Index != "audit" {
+		t.Fatalf("index = %q, want audit", query.Filters.Index)
+	}
+	if query.Stats != nil {
+		t.Fatal("stats should be nil")
+	}
+	if len(query.Commands) != 4 {
+		t.Fatalf("commands = %#v, want 4", query.Commands)
+	}
+	assertCommand(t, query.Commands[0], "table", []string{"_time", "service", "action", "bytes"})
+	assertCommand(t, query.Commands[1], "sort", []string{"-", "bytes"})
+	assertCommand(t, query.Commands[2], "head", []string{"10"})
+	assertCommand(t, query.Commands[3], "dedup", []string{"service", "action"})
+}
+
+func TestParseStatsThenSearchCommandPipeline(t *testing.T) {
+	query, err := Parse("index=audit | stats count as total by level service | sort level service | head 5 | table level service total")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if query.Filters.Index != "audit" {
+		t.Fatalf("index = %q, want audit", query.Filters.Index)
+	}
+	if query.Stats == nil {
+		t.Fatal("stats should be parsed")
+	}
+	if len(query.Commands) != 3 {
+		t.Fatalf("commands = %#v, want 3", query.Commands)
+	}
+	assertCommand(t, query.Commands[0], "sort", []string{"level", "service"})
+	assertCommand(t, query.Commands[1], "head", []string{"5"})
+	assertCommand(t, query.Commands[2], "table", []string{"level", "service", "total"})
+}
+
 func TestParseStatsOnlyStillWorks(t *testing.T) {
 	query, err := Parse("stats count by service")
 	if err != nil {
@@ -56,10 +118,13 @@ func TestParseStatsOnlyStillWorks(t *testing.T) {
 
 func TestParseRejectsUnsupportedSearch(t *testing.T) {
 	tests := []string{
-		"index=a | stats count | sort -count",
 		"index='a",
-		"service=api status=500",
 		"index=a | where service=api",
+		"index=a | table",
+		"index=a | sort",
+		"index=a | sort -",
+		"index=a | head 0",
+		"index=a | dedup",
 	}
 	for _, input := range tests {
 		t.Run(input, func(t *testing.T) {
@@ -67,6 +132,21 @@ func TestParseRejectsUnsupportedSearch(t *testing.T) {
 				t.Fatal("Parse() expected error")
 			}
 		})
+	}
+}
+
+func assertCommand(t *testing.T, got Command, name string, args []string) {
+	t.Helper()
+	if got.Name != name {
+		t.Fatalf("command name = %q, want %q", got.Name, name)
+	}
+	if len(got.Args) != len(args) {
+		t.Fatalf("command args = %#v, want %#v", got.Args, args)
+	}
+	for i := range args {
+		if got.Args[i] != args[i] {
+			t.Fatalf("command args = %#v, want %#v", got.Args, args)
+		}
 	}
 }
 

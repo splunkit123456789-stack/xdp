@@ -43,34 +43,66 @@ type SearchPlugin interface {
 	Close() error
 }
 
+type SearchCommandPlugin interface {
+	Metadata() Metadata
+	Validate(config map[string]any) error
+	Init(ctx InitContext, config map[string]any) error
+	Execute(ctx context.Context, input SearchCommandInput, command SearchCommand) (SearchCommandResult, error)
+	Close() error
+}
+
+type SearchCommand struct {
+	Name string
+	Args []string
+	Raw  string
+}
+
+type SearchCommandInput struct {
+	Rows   []map[string]any
+	Fields []string
+}
+
+type SearchCommandResult struct {
+	Rows       []map[string]any
+	Fields     []string
+	OutputMode string
+}
+
 type SearchStatsBackend interface {
 	Stats(ctx context.Context, query SearchStatsQuery) (splstats.Result, error)
 }
 
 type SearchInput struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
-	HotFields []SearchHotField
-	Backend   SearchStatsBackend
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []SearchFieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
+	HotFields    []SearchHotField
+	Backend      SearchStatsBackend
 }
 
 type SearchStatsQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
-	Stats     splstats.Query
-	HotFields []SearchHotField
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []SearchFieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
+	Stats        splstats.Query
+	HotFields    []SearchHotField
+}
+
+type SearchFieldFilter struct {
+	Field string
+	Value string
 }
 
 type SearchHotField struct {

@@ -43,6 +43,12 @@ type dataSourcePortCheckRequest struct {
 	ListenHost        string `json:"listen_host,omitempty"`
 }
 
+type dataSourceConnectivityCheckRequest struct {
+	PluginCode    string         `json:"plugin_code"`
+	PluginConfig  map[string]any `json:"plugin_config"`
+	CollectorPort int            `json:"collector_port,omitempty"`
+}
+
 func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 	counts := map[string]int{}
 	h.mu.RLock()
@@ -56,7 +62,7 @@ func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.mu.RUnlock()
-	writeJSON(w, http.StatusOK, map[string]any{"plugins": []InputPlugin{
+	plugins := []InputPlugin{
 		{
 			Code:            "syslog",
 			Name:            "Syslog",
@@ -76,20 +82,73 @@ func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 				"protocols":      []string{"UDP"},
 			},
 		},
-		{
-			Code:            "kafka",
-			Name:            "Kafka",
-			Description:     "大规模消息流采集插件，P0 展示配置入口，运行时接入降级到 P1。",
-			Status:          "disabled",
-			Version:         "1.0.0",
-			ConfiguredCount: counts["kafka"],
-			RuntimeCapabilities: map[string]any{
-				"runtime_ingest": false,
-				"hot_reload":     false,
-				"protocols":      []string{"TCP"},
-			},
+	}
+	for _, plugin := range h.enabledImportedInputPlugins(r.Context(), counts) {
+		plugins = append(plugins, plugin)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
+}
+
+func (h *Handler) enabledImportedInputPlugins(ctx context.Context, counts map[string]int) []InputPlugin {
+	items := []PluginImportResponse{}
+	if h.mysql != nil {
+		if records, err := h.mysql.ListPluginRecords(ctx); err == nil {
+			items = append(items, pluginResponsesFromRecords(records, "input")...)
+		}
+	}
+	h.mu.RLock()
+	for _, item := range h.importedPlugins {
+		normalized := normalizePluginResponse(item)
+		if normalized.PluginType == "input" {
+			items = append(items, normalized)
+		}
+	}
+	h.mu.RUnlock()
+	items = deduplicatePluginResponses(items)
+	out := make([]InputPlugin, 0, len(items))
+	for _, item := range items {
+		if productVisibleBuiltinPlugin(item.PluginType, item.PluginCode) || !isPluginEnabled(item.Status) {
+			continue
+		}
+		out = append(out, inputPluginFromImport(item, counts[item.PluginCode]))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out
+}
+
+func inputPluginFromImport(item PluginImportResponse, configuredCount int) InputPlugin {
+	return InputPlugin{
+		Code:            item.PluginCode,
+		Name:            firstNonEmpty(item.Name, item.PluginCode),
+		Description:     item.Description,
+		Status:          item.Status,
+		Version:         item.PluginVersion,
+		ConfiguredCount: configuredCount,
+		SchemaSummary:   schemaSummary(item.ConfigSchema),
+		RuntimeCapabilities: map[string]any{
+			"runtime_ingest": true,
+			"hot_reload":     true,
+			"protocols":      []string{strings.ToUpper(item.PluginCode)},
 		},
-	}})
+	}
+}
+
+func schemaSummary(schema map[string]any) map[string]any {
+	summary := map[string]any{}
+	if required := schemaStringList(schema["required"]); len(required) > 0 {
+		summary["required"] = required
+	}
+	conditional := map[string]string{}
+	for field, rawRule := range schemaProperties(schema) {
+		rule, _ := rawRule.(map[string]any)
+		if raw, ok := rule["x-required-if"].(map[string]any); ok {
+			conditional[field] = fmt.Sprintf("%v=%v", raw["field"], raw["equals"])
+		}
+	}
+	if len(conditional) > 0 {
+		summary["conditional_required"] = conditional
+	}
+	return summary
 }
 
 func (h *Handler) checkDataSourcePort(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +178,45 @@ func (h *Handler) checkDataSourcePort(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) checkDataSourceConnectivity(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req dataSourceConnectivityCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid connectivity check request")
+		return
+	}
+	pluginCode := strings.ToLower(strings.TrimSpace(req.PluginCode))
+	if pluginCode == "" {
+		writeErrorCode(w, http.StatusBadRequest, "VALIDATION_ERROR", "plugin_code is required")
+		return
+	}
+	config := req.PluginConfig
+	if config == nil {
+		config = map[string]any{}
+	}
+	if pluginCode != "kafka" {
+		writeErrorCode(w, http.StatusUnprocessableEntity, "CONNECTIVITY_CHECK_NOT_SUPPORTED", "connectivity check only supports Kafka input plugins")
+		return
+	}
+	if apiErr := h.validateImportedInputPluginConfig(pluginCode, config); apiErr != nil {
+		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
+		return
+	}
+	brokers := stringListConfig(config, "brokers")
+	topic := strings.TrimSpace(stringConfig(config, "topic", ""))
+	endpoint := fmt.Sprintf("kafka://%s/%s", strings.Join(brokers, ","), topic)
+	if err := probeKafkaBrokers(r.Context(), brokers); err != nil {
+		writeErrorCode(w, http.StatusConflict, "KAFKA_CONNECTIVITY_FAILED", "Kafka 连通性失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available":   true,
+		"plugin_code": pluginCode,
+		"endpoint":    endpoint,
+		"message":     "Kafka 连通性正常",
+	})
+}
+
 func (h *Handler) getDataSource(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	source, ok := h.findDataSource(id)
@@ -140,6 +238,14 @@ func (h *Handler) updateDataSource(w http.ResponseWriter, r *http.Request) {
 	if !isCollectDataSourceRequest(source) {
 		writeErrorCode(w, http.StatusBadRequest, "INVALID_REQUEST", "collect datasource payload is required")
 		return
+	}
+	if existing, ok := h.findDataSource(id); ok && existing.Status != "deleted" {
+		existingPlugin := strings.ToLower(strings.TrimSpace(collectPluginCode(existing)))
+		requestedPlugin := strings.ToLower(strings.TrimSpace(source.PluginCode))
+		if requestedPlugin != "" && existingPlugin != requestedPlugin {
+			writeErrorCode(w, http.StatusConflict, "PLUGIN_TYPE_IMMUTABLE", "采集插件类型不可修改")
+			return
+		}
 	}
 	h.saveCollectDataSource(w, r, source, id)
 }
@@ -298,7 +404,7 @@ func (h *Handler) deleteDataSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) saveCollectDataSource(w http.ResponseWriter, r *http.Request, source DataSource, pathID string) {
-	if apiErr := validateCollectDataSourcePayload(source); apiErr != nil {
+	if apiErr := h.validateCollectDataSourcePayload(source); apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
 		return
 	}
@@ -337,11 +443,8 @@ func (h *Handler) normalizeCollectDataSource(source DataSource, pathID string) (
 	if pluginCode == "" {
 		return DataSource{}, validationError("plugin_code is required")
 	}
-	if pluginCode == "kafka" {
-		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_RUNTIME_DISABLED", message: "kafka runtime ingest is not enabled in P0"}
-	}
 	if pluginCode != "syslog" {
-		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
+		return h.normalizeImportedInputDataSource(source, pathID, pluginCode, now)
 	}
 	name := strings.TrimSpace(source.Name)
 	if name == "" {
@@ -380,7 +483,46 @@ func (h *Handler) normalizeCollectDataSource(source DataSource, pathID string) (
 	}, nil
 }
 
-func validateCollectDataSourcePayload(source DataSource) *collectAPIError {
+func (h *Handler) normalizeImportedInputDataSource(source DataSource, pathID string, pluginCode string, now time.Time) (DataSource, *collectAPIError) {
+	plugin, ok := h.findPlugin("input", pluginCode, "")
+	if !ok {
+		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
+	}
+	if !isPluginEnabled(plugin.Status) {
+		return DataSource{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_ENABLED", message: "input plugin is not enabled"}
+	}
+	name := strings.TrimSpace(source.Name)
+	if name == "" {
+		return DataSource{}, validationError("name is required")
+	}
+	id := strings.TrimSpace(pathID)
+	if id == "" {
+		id = strings.TrimSpace(source.ID)
+	}
+	if id == "" {
+		id = collectIDFromName(name)
+	}
+	id = h.uniqueDataSourceID(id, pathID != "")
+	code := firstNonEmpty(strings.TrimSpace(source.Code), id)
+	status := normalizeStatus(source.Status)
+	return DataSource{
+		ID:               id,
+		Code:             code,
+		Type:             pluginCode,
+		Name:             name,
+		Status:           status,
+		PluginCode:       pluginCode,
+		PluginVersion:    plugin.PluginVersion,
+		PluginRuntime:    firstNonEmpty(strings.TrimSpace(plugin.Runtime), "external"),
+		PluginConfig:     normalizeImportedPluginConfig(source.PluginConfig),
+		InternalRawTopic: "raw.ds_" + strings.ReplaceAll(id, "-", "_"),
+		Protocol:         strings.ToLower(firstNonEmpty(stringConfig(source.PluginConfig, "transport_protocol", ""), stringConfig(source.PluginConfig, "security_protocol", ""))),
+		PipelineID:       "pipe_" + strings.ReplaceAll(id, "-", "_"),
+		UpdatedAt:        now,
+	}, nil
+}
+
+func (h *Handler) validateCollectDataSourcePayload(source DataSource) *collectAPIError {
 	if strings.TrimSpace(source.InternalRawTopic) != "" {
 		return validationError("internal_raw_topic is system generated and cannot be submitted")
 	}
@@ -394,11 +536,8 @@ func validateCollectDataSourcePayload(source DataSource) *collectAPIError {
 		return validationError("sourcetype is derived from parse rule name and cannot be submitted")
 	}
 	pluginCode := strings.ToLower(strings.TrimSpace(source.PluginCode))
-	if pluginCode == "kafka" {
-		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_RUNTIME_DISABLED", message: "kafka runtime ingest is not enabled in P0"}
-	}
-	if pluginCode != "syslog" {
-		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
+	if pluginCode == "" {
+		return validationError("plugin_code is required")
 	}
 	status := strings.ToLower(strings.TrimSpace(source.Status))
 	if status == "" {
@@ -410,6 +549,9 @@ func validateCollectDataSourcePayload(source DataSource) *collectAPIError {
 	config := source.PluginConfig
 	if config == nil {
 		return validationError("plugin_config is required")
+	}
+	if pluginCode != "syslog" {
+		return h.validateImportedInputPluginConfig(pluginCode, config)
 	}
 	port, ok := intConfig(config, "collector_port")
 	if !ok || port < 1 || port > 65535 {
@@ -442,6 +584,169 @@ func validateCollectDataSourcePayload(source DataSource) *collectAPIError {
 		}
 	}
 	return nil
+}
+
+func validateCollectDataSourcePayload(source DataSource) *collectAPIError {
+	if strings.ToLower(strings.TrimSpace(source.PluginCode)) != "syslog" {
+		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
+	}
+	return (&Handler{}).validateCollectDataSourcePayload(source)
+}
+
+func (h *Handler) validateImportedInputPluginConfig(pluginCode string, config map[string]any) *collectAPIError {
+	plugin, ok := h.findPlugin("input", pluginCode, "")
+	if !ok {
+		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_SUPPORTED", message: "unsupported input plugin"}
+	}
+	if !isPluginEnabled(plugin.Status) {
+		return &collectAPIError{status: http.StatusUnprocessableEntity, code: "PLUGIN_NOT_ENABLED", message: "input plugin is not enabled"}
+	}
+	if apiErr := validateConfigBySchema(plugin.ConfigSchema, config); apiErr != nil {
+		return apiErr
+	}
+	if strings.EqualFold(pluginCode, "kafka") {
+		if boolConfig(config, "log_filter_enabled", false) {
+			pattern := strings.TrimSpace(stringConfig(config, "log_filter_regex", ""))
+			if pattern == "" {
+				return pluginConfigInvalid("plugin_config.log_filter_regex is required when log filter is enabled")
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				return pluginConfigInvalid("plugin_config.log_filter_regex is invalid")
+			}
+		}
+	}
+	return nil
+}
+
+func validateConfigBySchema(schema map[string]any, config map[string]any) *collectAPIError {
+	if len(schema) == 0 {
+		return nil
+	}
+	properties := schemaProperties(schema)
+	required := schemaStringList(schema["required"])
+	for _, field := range required {
+		if _, ok := config[field]; !ok {
+			return pluginConfigInvalid("plugin_config." + field + " is required")
+		}
+	}
+	if additional, ok := schema["additionalProperties"].(bool); ok && !additional && len(properties) > 0 {
+		for field := range config {
+			if _, ok := properties[field]; !ok {
+				return pluginConfigInvalid("plugin_config." + field + " is not supported")
+			}
+		}
+	}
+	for field, rawRule := range properties {
+		rule, _ := rawRule.(map[string]any)
+		if rule == nil {
+			continue
+		}
+		value, exists := config[field]
+		if !exists {
+			if requiredByCondition(rule, config) {
+				return pluginConfigInvalid("plugin_config." + field + " is required")
+			}
+			continue
+		}
+		if apiErr := validateSchemaValue(field, rule, value); apiErr != nil {
+			return apiErr
+		}
+	}
+	return nil
+}
+
+func schemaProperties(schema map[string]any) map[string]any {
+	if raw, ok := schema["properties"].(map[string]any); ok {
+		return raw
+	}
+	return map[string]any{}
+}
+
+func schemaStringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func requiredByCondition(rule map[string]any, config map[string]any) bool {
+	raw, ok := rule["x-required-if"].(map[string]any)
+	if !ok {
+		return false
+	}
+	field := strings.TrimSpace(fmt.Sprint(raw["field"]))
+	if field == "" {
+		return false
+	}
+	return fmt.Sprint(config[field]) == fmt.Sprint(raw["equals"])
+}
+
+func validateSchemaValue(field string, rule map[string]any, value any) *collectAPIError {
+	switch strings.TrimSpace(fmt.Sprint(rule["type"])) {
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			return pluginConfigInvalid("plugin_config." + field + " must be string")
+		}
+		if minLength, ok := numberFromAny(rule["minLength"]); ok && len(strings.TrimSpace(text)) < minLength {
+			return pluginConfigInvalid("plugin_config." + field + " is required")
+		}
+		if enum := schemaStringList(rule["enum"]); len(enum) > 0 && !containsString(enum, text) {
+			return pluginConfigInvalid("plugin_config." + field + " is invalid")
+		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return pluginConfigInvalid("plugin_config." + field + " must be array")
+		}
+		if minItems, ok := numberFromAny(rule["minItems"]); ok && len(items) < minItems {
+			return pluginConfigInvalid("plugin_config." + field + " is required")
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return pluginConfigInvalid("plugin_config." + field + " items must be string")
+			}
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return pluginConfigInvalid("plugin_config." + field + " must be boolean")
+		}
+	}
+	return nil
+}
+
+func numberFromAny(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	default:
+		return 0, false
+	}
+}
+
+func pluginConfigInvalid(message string) *collectAPIError {
+	return &collectAPIError{status: http.StatusBadRequest, code: "PLUGIN_CONFIG_INVALID", message: message}
+}
+
+func isPluginEnabled(status string) bool {
+	return strings.EqualFold(status, "enabled") || strings.EqualFold(status, "active")
+}
+
+func normalizeImportedPluginConfig(config map[string]any) map[string]any {
+	out := make(map[string]any, len(config))
+	for key, value := range config {
+		out[key] = value
+	}
+	return out
 }
 
 func normalizeSyslogPluginConfig(config map[string]any) map[string]any {
@@ -488,6 +793,34 @@ func probeListenerPort(host string, protocol string, port int) error {
 		return err
 	}
 	return ln.Close()
+}
+
+func probeKafkaBrokers(ctx context.Context, brokers []string) error {
+	if os.Getenv("XDP_KAFKA_CONNECTIVITY_SKIP_NETWORK") == "true" {
+		return nil
+	}
+	if len(brokers) == 0 {
+		return fmt.Errorf("brokers is required")
+	}
+	var lastErr error
+	for _, broker := range brokers {
+		address := strings.TrimSpace(broker)
+		if address == "" {
+			continue
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", address)
+		cancel()
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("brokers is required")
+	}
+	return lastErr
 }
 
 func (h *Handler) checkListenerPort(ctx context.Context, host string, protocol string, port int) error {
@@ -552,7 +885,7 @@ func (h *Handler) persistDataSource(r *http.Request, source DataSource, upsertIn
 }
 
 func (h *Handler) persistDataSourceRuntimeState(r *http.Request, source DataSource) error {
-	if h.mysql == nil || collectPluginCode(source) != "syslog" {
+	if h.mysql == nil {
 		return nil
 	}
 	state := runtimeStateForDataSource(source)

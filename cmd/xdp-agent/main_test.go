@@ -66,6 +66,31 @@ func TestTopicRouterReloadBuildsActiveSyslogListenerSpecs(t *testing.T) {
 	}
 }
 
+func TestTopicRouterReloadBuildsActiveKafkaConsumerSpecs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"datasources":[{"id":"kafka-audit","type":"kafka","name":"Kafka Audit","status":"active","internal_raw_topic":"raw.ds_kafka_audit","plugin_code":"kafka","plugin_config":{"brokers":["127.0.0.1:9092"],"topic":"audit-events","consumer_group":"xdp-agent","start_offset":"earliest","security_protocol":"PLAINTEXT","encoding":"UTF-8","log_filter_enabled":false}}]}`))
+	}))
+	defer server.Close()
+
+	router := newTopicRouter()
+	if err := router.reload(t.Context(), server.URL, ""); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+
+	specs := router.kafkaSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("kafka specs len = %d, want 1: %#v", len(specs), specs)
+	}
+	spec := specs["kafka-audit"]
+	if spec.ID != "kafka-audit" || spec.Name != "Kafka Audit" || spec.Topic != "audit-events" || spec.InternalRawTopic != "raw.ds_kafka_audit" {
+		t.Fatalf("kafka spec = %#v", spec)
+	}
+	if len(spec.Brokers) != 1 || spec.Brokers[0] != "127.0.0.1:9092" || spec.ConsumerGroup != "xdp-agent" {
+		t.Fatalf("kafka broker/group spec = %#v", spec)
+	}
+}
+
 func TestTopicRouterReloadRemovesDisabledSyslogListenerSpecs(t *testing.T) {
 	body := `{"datasources":[{"id":"firewall-syslog","type":"syslog","name":"Firewall Syslog","status":"active","internal_raw_topic":"raw.ds_firewall","plugin_config":{"collector_port":5514,"transport_protocol":"UDP"}}]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

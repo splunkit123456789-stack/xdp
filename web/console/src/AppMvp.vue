@@ -47,7 +47,14 @@
       <section class="workspace">
         <section class="main-panel">
           <section v-if="currentModule === 'collect'" data-testid="collect-page" class="tab-panel">
-            <div class="panel-header"><h2><span class="page-icon page-icon-collect">IN</span>采集配置</h2><div class="panel-header-actions"><span class="badge">Syslog / Kafka</span><button data-testid="show-input-form" class="btn" type="button" @click="openInputForm">新增采集</button></div></div>
+            <div class="panel-header"><h2><span class="page-icon page-icon-collect">IN</span>采集配置</h2><div class="panel-header-actions"><span class="badge">{{ inputPluginBadge }}</span><button data-testid="show-input-form" class="btn" type="button" @click="openInputForm">新增采集</button></div></div>
+            <p v-if="inputFormNotice" data-testid="input-form-notice" class="status-line">{{ inputFormNotice }}</p>
+            <div v-if="pluginCatalogErrors.input" data-testid="input-plugin-catalog-error" class="catalog-load-error">
+              <span>{{ pluginCatalogErrors.input }}</span>
+              <button data-testid="retry-input-plugin-catalog" class="btn ghost" type="button" :disabled="pluginCatalogLoading.input" @click="retryInputPluginCatalog">
+                {{ pluginCatalogLoading.input ? "加载中" : "重试" }}
+              </button>
+            </div>
             <div class="content-grid" :class="{ 'list-first': !showInputForm }">
               <article v-if="showInputForm" data-testid="input-form-card" class="card config-drawer" aria-label="采集配置表单">
                 <div class="card-head"><span>{{ editingInputId ? "修改采集" : "新增采集" }}</span><button class="btn ghost" type="button" @click="clearInputForm">清空</button></div>
@@ -55,8 +62,8 @@
                   <label>设备名称<input v-model="inputForm.name" class="field" required placeholder="请输入设备名称" /><span v-if="inputNameError" data-testid="input-name-error" class="field-error">{{ inputNameError }}</span></label>
                   <label>状态<select v-model="inputForm.status" class="select" required><option>active</option><option>disabled</option></select></label>
                   <div class="plugin-grid">
-                    <button data-testid="input-plugin-syslog" :class="{ active: inputForm.plugin === 'Syslog' }" class="plugin-card" type="button" @click="inputForm.plugin = 'Syslog'"><span class="plugin-icon icon-syslog">SYS</span>Syslog</button>
-                    <button data-testid="input-plugin-kafka" :class="{ active: inputForm.plugin === 'Kafka' }" class="plugin-card" type="button" @click="inputForm.plugin = 'Kafka'"><span class="plugin-icon icon-kafka">K</span>Kafka</button>
+                    <button data-testid="input-plugin-syslog" :disabled="Boolean(editingInputId)" :class="{ active: inputForm.plugin === 'Syslog', locked: Boolean(editingInputId) }" class="plugin-card" type="button" @click="selectInputPlugin('Syslog')"><span class="plugin-icon icon-syslog">SYS</span>Syslog</button>
+                    <button v-if="kafkaInputPlugin" data-testid="input-plugin-kafka" :disabled="Boolean(editingInputId)" :class="{ active: inputForm.plugin === 'Kafka', locked: Boolean(editingInputId) }" class="plugin-card" type="button" @click="selectInputPlugin('Kafka')"><span class="plugin-icon icon-kafka">K</span>Kafka</button>
                   </div>
 
                   <div v-if="inputForm.plugin === 'Syslog'" class="param-panel">
@@ -75,17 +82,20 @@
                   </div>
 
                   <div v-else class="param-panel">
-                    <div data-testid="kafka-runtime-disabled" class="note">Kafka 采集插件为 P1 能力，当前仅展示配置形态，暂不支持保存运行时采集。</div>
-                    <label>传输层协议<select v-model="inputForm.transportProtocolKafka" class="select"><option>TCP</option></select></label>
-                    <label>Broker 地址<input v-model="inputForm.brokers" class="field" placeholder="10.0.0.1:9092,10.0.0.2:9092" /></label>
-                    <div class="two"><label>Topic<input v-model="inputForm.topic" class="field" placeholder="xdp-events" /></label><label>消费组<input v-model="inputForm.consumerGroup" class="field" placeholder="xdp-consumer" /></label></div>
+                    <div data-testid="kafka-runtime-enabled" class="note">Kafka 采集插件为 P1 运行时能力，保存后由 Agent 按数据源状态热加载消费。</div>
                     <div class="two">
-                      <label>通信协议<select v-model="inputForm.securityProtocol" class="select"><option>PLAINTEXT</option><option>SASL_PLAINTEXT</option><option>SASL_SSL</option><option>SSL</option></select></label>
-                      <label>消费策略<select v-model="inputForm.consumeStrategy" class="select"><option>最早</option><option>最新</option></select></label>
+                      <template v-for="field in kafkaFormFields" :key="field.name">
+                        <label v-if="isKafkaFieldVisible(field)">{{ field.label }}
+                          <select v-if="field.kind === 'select'" v-model="inputForm[field.model]" :data-testid="field.testid" class="select" required>
+                            <option v-for="option in field.options" :key="option.value" :value="option.value">{{ option.label }}</option>
+                          </select>
+                          <input v-else v-model="inputForm[field.model]" :data-testid="field.testid" class="field" required :placeholder="field.placeholder" />
+                        </label>
+                      </template>
                     </div>
-                    <div class="two"><label>字符编码<select v-model="inputForm.encodingKafka" class="select"><option>UTF-8</option><option>GBK</option><option>ISO-8859-1</option></select></label><label>日志筛选<select v-model="inputForm.logFilterEnabledKafka" class="select"><option value="off">关闭</option><option value="on">开启</option></select></label></div>
-                    <div v-if="inputForm.logFilterEnabledKafka === 'on'" class="conditional-panel"><label>正则筛选<input v-model="inputForm.logFilterRegexKafka" class="field" placeholder="^allow|^accept" /></label><div class="note">开启后，仅符合正则筛选条件的消息会进入解析与存储流程。</div></div>
-                    <div class="actions"><button class="btn ghost" type="button">测试连通性</button></div>
+                    <div v-if="inputForm.logFilterEnabledKafka === 'on'" class="note">开启后，仅符合正则筛选条件的消息会进入解析与存储流程。</div>
+                    <div class="actions"><button data-testid="kafka-connectivity-check" class="btn ghost" type="button" @click="checkKafkaConnectivity">测试连通性</button></div>
+                    <p v-if="kafkaConnectivityStatus" data-testid="kafka-connectivity-status" class="status-line">{{ kafkaConnectivityStatus }}</p>
                   </div>
 
                   <div class="form-hint">默认写入策略由系统内部处理，采集页不展示索引配置；解析配置仅通过采集源名称关联。</div>
@@ -169,6 +179,12 @@
 
           <section v-if="currentModule === 'parse'" data-testid="parse-page" class="tab-panel">
             <div class="panel-header"><h2><span class="page-icon page-icon-parse">PX</span>解析配置</h2><div class="panel-header-actions"><span class="badge">props.conf / 解析插件</span><button data-testid="show-rule-form" class="btn" type="button" @click="openRuleForm">新增解析规则</button></div></div>
+            <div v-if="pluginCatalogErrors.parser" data-testid="parser-plugin-catalog-error" class="catalog-load-error">
+              <span>{{ pluginCatalogErrors.parser }}</span>
+              <button data-testid="retry-parser-plugin-catalog" class="btn ghost" type="button" :disabled="pluginCatalogLoading.parser" @click="retryParserPluginCatalog">
+                {{ pluginCatalogLoading.parser ? "加载中" : "重试" }}
+              </button>
+            </div>
             <div class="content-grid" :class="{ 'list-first': !showRuleForm }">
               <article v-if="showRuleForm" data-testid="rule-form-card" class="card config-drawer" aria-label="解析配置表单">
                 <div class="card-head"><span>{{ editingRuleId ? "修改规则" : "新增规则" }}</span><button class="btn ghost" type="button" @click="clearRuleForm">清空</button></div>
@@ -182,10 +198,21 @@
                   <div class="note">新增规则默认不绑定采集数据源，需手动选择；写入 index 仅展示逻辑 index，物理表由服务端内部映射。</div>
 	                  <label>解析方式</label>
 	                  <div class="plugin-grid parser-plugin-grid">
-	                    <button data-testid="parser-regex" :class="{ active: ruleForm.plugin === '正则解析插件' }" class="plugin-card" type="button" @click="selectParserPlugin('正则解析插件')"><span class="plugin-icon icon-regex">F(x)</span>正则</button>
+	                    <button
+                        v-for="plugin in parserPluginOptions"
+                        :key="`${plugin.plugin_code}-${plugin.plugin_version}`"
+                        :data-testid="`parser-${plugin.plugin_code}`"
+                        :class="{ active: ruleForm.pluginCode === plugin.plugin_code }"
+                        class="plugin-card"
+                        type="button"
+                        @click="selectParserPlugin(plugin)"
+                      >
+                        <span class="plugin-icon" :class="plugin.plugin_code === 'regex' ? 'icon-regex' : 'icon-json'">{{ plugin.plugin_code === "regex" ? "F(x)" : "{}" }}</span>
+                        {{ parserPluginDisplayName(plugin) }}
+                      </button>
 	                  </div>
 	                  <label>日志样例<textarea v-model="ruleForm.sampleLog" data-testid="sample-log" required placeholder="请输入日志样例"></textarea></label>
-	                  <div v-if="ruleForm.plugin === '正则解析插件'" class="param-panel"><label>正则表达式<textarea v-model="ruleForm.regexPattern" data-testid="regex-pattern" required placeholder="src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"></textarea></label></div>
+	                  <div v-if="ruleForm.pluginCode === 'regex'" class="param-panel"><label>正则表达式<textarea v-model="ruleForm.regexPattern" data-testid="regex-pattern" required placeholder="src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"></textarea></label></div>
                   <div class="actions"><button data-testid="preview-parse" class="btn" type="button" @click="previewParse">预览解析结果</button></div>
                   <div data-testid="parse-preview" class="preview-box table-wrap"><table><thead><tr><th>序号</th><th>字段</th><th>值</th><th>字段类型</th></tr></thead><tbody><tr v-if="!previewRows.length"><td colspan="4">暂无解析结果</td></tr><tr v-for="(row, index) in previewRows" :key="`${row.field}-${index}`"><td>{{ index + 1 }}</td><td><code>{{ row.field }}</code></td><td>{{ row.value }}</td><td>{{ row.type }}</td></tr></tbody></table></div>
                   <details class="advanced-panel" open><summary>高级配置 / props.conf</summary><label>最终 props.conf 配置<textarea v-model="ruleForm.propsConf" data-testid="props-conf" class="props-editor" required placeholder="[source::firewall]&#10;TIME_PREFIX = event_time="></textarea></label></details>
@@ -201,21 +228,92 @@
           <section v-if="currentModule === 'index'" data-testid="index-page" class="tab-panel">
             <div class="panel-header"><h2><span class="page-icon page-icon-index">IX</span>索引配置</h2><div class="panel-header-actions"><span class="badge">ClickHouse 物理分表</span><button data-testid="show-index-form" class="btn" type="button" @click="openIndexForm">新增 index</button></div></div>
             <div class="content-grid" :class="{ 'list-first': !showIndexForm }">
-                  <article v-if="showIndexForm" data-testid="index-form-card" class="card config-drawer" aria-label="索引配置表单"><div class="card-head"><span>{{ editingIndexId ? "修改索引" : "新增索引" }}</span><button class="btn ghost" type="button" @click="clearIndexForm">清空</button></div><form class="form-grid" @submit.prevent="saveIndex"><label>index 名称<input v-model="indexForm.name" data-testid="index-name" class="field" required placeholder="请输入index名称" /></label><div class="two"><label>TTL 天数<input v-model="indexForm.ttl" data-testid="index-ttl" class="field" min="1" required type="number" /></label><label>状态<select v-model="indexForm.status" data-testid="index-status" class="select" required><option>active</option><option>disabled</option></select></label></div><p v-if="indexFormError" data-testid="index-form-error" class="field-error form-error">{{ indexFormError }}</p><div class="actions"><button class="btn" type="submit">{{ editingIndexId ? "保存修改" : "新增" }}</button><button data-testid="cancel-index-form" class="btn ghost" type="button" @click="resetIndexForm">取消</button></div></form></article>
-              <article class="card"><div class="card-head"><span>索引列表</span><span class="status-line">查询 / 修改 / 删除</span></div><div class="table-wrap"><table><thead><tr><th>index</th><th>物理表</th><th>TTL</th><th>数据量</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in indexes" :key="item.id"><td><code>{{ item.name }}</code></td><td><code>events_{{ item.name }}</code></td><td>{{ item.ttl }}d</td><td>{{ item.rows.toLocaleString() }}</td><td>{{ item.status }}</td><td><div class="row-actions"><button class="link-btn" type="button" @click="editIndex(item)">修改</button><button class="link-btn delete" type="button" @click="deleteIndex(item.id)">删除</button></div></td></tr></tbody></table></div><div data-testid="index-pagination" class="pagination-bar"><div class="pagination-controls"><button data-testid="index-prev" class="pager-arrow" type="button" :disabled="indexPagination.page <= 1" aria-label="上一页" @click="goIndexPage(indexPagination.page - 1)">‹</button><template v-for="item in visibleIndexPages" :key="item.key"><span v-if="item.ellipsis" class="pager-ellipsis">...</span><button v-else :data-testid="`index-page-${item.page}`" class="pager-page" :class="{ active: item.page === indexPagination.page }" type="button" @click="goIndexPage(item.page)">{{ item.label }}</button></template><button data-testid="index-next" class="pager-arrow" type="button" :disabled="indexPagination.page >= totalIndexPages" aria-label="下一页" @click="goIndexPage(indexPagination.page + 1)">›</button><label class="page-size-select"><select v-model.number="indexPageSize" data-testid="index-page-size" class="select compact-select" @change="reloadIndexFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label></div></div></article>
+              <article data-testid="writer-runtime-panel" class="card writer-runtime-card"><div class="card-head"><span>Writer 入库状态</span><button class="btn ghost" type="button" @click="loadWriterRuntime(true)">刷新</button></div><div v-if="writerRuntimeLoading" class="status-line">Writer 状态加载中...</div><p v-else-if="writerRuntimeError" class="field-error">{{ writerRuntimeError }}</p><div v-else class="writer-runtime-grid"><div><span>状态</span><strong>{{ writerRuntime.status || "unknown" }}</strong><small>{{ writerRuntime.output_topic || "未连接" }}</small></div><div><span>吞吐</span><strong>{{ formatWriterEPS(writerRuntime.eps) }} EPS</strong><small>累计 {{ formatNumber(writerRuntime.total_events || 0) }} 条</small></div><div><span>P95 入库延迟</span><strong>P95 {{ formatNumber(writerRuntime.p95_ingest_latency_ms || 0) }}ms</strong><small>最近批次 {{ formatNumber(writerRuntime.last_duration_ms || 0) }}ms</small></div><div><span>失败 / Deadletter</span><strong>{{ formatPercent(writerRuntime.failure_rate || 0) }}</strong><small>失败 {{ formatNumber(writerRuntime.failed_events || 0) }} 条 · DLQ {{ formatNumber(writerRuntime.deadletter_events || 0) }} 条</small></div><div><span>批量策略</span><strong>{{ formatNumber(writerRuntime.batch_size || 0) }} 条/批</strong><small>批次 {{ formatNumber(writerRuntime.total_batches || 0) }} · 重试 {{ formatNumber(writerRuntime.last_retry_count || 0) }}</small></div></div></article>
+                  <article v-if="showIndexForm" data-testid="index-form-card" class="card config-drawer" aria-label="索引配置表单"><div class="card-head"><span>{{ editingIndexId ? "修改索引" : "新增索引" }}</span><button class="btn ghost" type="button" @click="clearIndexForm">清空</button></div><form class="form-grid" @submit.prevent="saveIndex"><label>index 名称<input v-model="indexForm.name" data-testid="index-name" class="field" required :disabled="Boolean(editingIndexId)" placeholder="请输入index名称" /></label><div class="two"><label>TTL 天数<input v-model="indexForm.ttl" data-testid="index-ttl" class="field" min="1" required type="number" /></label><label>状态<select v-model="indexForm.status" data-testid="index-status" class="select" required><option>active</option><option>disabled</option></select></label></div><p v-if="indexFormError" data-testid="index-form-error" class="field-error form-error">{{ indexFormError }}</p><div class="actions"><button class="btn" type="submit">{{ editingIndexId ? "保存修改" : "新增" }}</button><button data-testid="cancel-index-form" class="btn ghost" type="button" @click="resetIndexForm">取消</button></div></form></article>
+              <article class="card">
+                <div class="card-head"><span>索引列表</span><span class="status-line">查询 / 修改 / 删除 / 趋势</span></div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>index</th><th>物理表</th><th>TTL</th><th>数据量</th><th>存储大小</th><th>最近写入</th><th>状态</th><th>操作</th></tr></thead>
+                    <tbody>
+                      <template v-for="item in indexes" :key="item.id">
+                        <tr>
+                          <td><code>{{ item.name }}</code></td>
+                          <td><code>{{ item.tableName || `events_${item.name}` }}</code></td>
+                          <td><span>{{ item.ttl }}d</span><br /><small v-if="item.physicalTtl" class="status-line">物理 {{ item.physicalTtl }}d</small></td>
+                          <td>{{ formatNumber(item.rows) }}</td>
+                          <td>{{ formatBytes(item.storageBytes) }}</td>
+                          <td>{{ formatIndexDateTime(item.latestEventTime) }}</td>
+                          <td>{{ item.status }}</td>
+                          <td>
+                            <div class="row-actions">
+                              <button class="link-btn" type="button" @click="loadIndexTrend(item)">{{ item.trendOpen ? "收起趋势" : "趋势" }}</button>
+                              <button class="link-btn" type="button" @click="editIndex(item)">修改</button>
+                              <button class="link-btn delete" type="button" @click="deleteIndex(item.id)">删除</button>
+                            </div>
+                          </td>
+                        </tr>
+                        <tr v-if="item.trendOpen" class="index-trend-row">
+                          <td colspan="8">
+                            <div data-testid="index-trend-panel" class="index-trend-panel">
+                              <p v-if="item.trendLoading" class="status-line">趋势加载中...</p>
+                              <p v-else-if="item.trendError" class="field-error">{{ item.trendError }}</p>
+                              <div v-else>
+                                <div class="index-trend-summary">
+                                  <span>近 7 天净增 {{ formatNumber(item.trend?.rows_growth_7d || 0) }} 条</span>
+                                  <span>存储变化 {{ formatBytes(Math.abs(item.trend?.storage_growth_bytes_7d || 0)) }}</span>
+                                  <span>当前 {{ formatNumber(item.trend?.current_rows || item.rows) }} 条 / {{ formatBytes(item.trend?.current_storage_bytes || item.storageBytes) }}</span>
+                                  <span>{{ item.trend?.source === "snapshot" ? "采样数据" : "实时数据" }}</span>
+                                  <span v-if="item.trend?.snapshot_retention_days">保留 {{ item.trend.snapshot_retention_days }} 天</span>
+                                </div>
+                                <div class="index-trend-chart">
+                                  <div class="index-trend-plot">
+                                    <div data-testid="index-trend-y-axis" class="index-trend-y-axis">
+                                      <span v-for="tick in indexTrendYTicks(item)" :key="tick.key">{{ tick.label }}</span>
+                                    </div>
+                                    <div class="index-trend-main">
+                                      <div class="index-trend-bars">
+                                        <span v-for="(point, pointIndex) in (item.trend?.points || [])" :key="`${point.date || point.captured_at || pointIndex}-${pointIndex}`" :title="`${indexTrendPointLabel(point)}: ${formatNumber(point.rows)} 条`" :style="{ height: `${indexTrendBarHeight(item, point)}%` }"></span>
+                                      </div>
+                                      <div data-testid="index-trend-x-axis" class="index-trend-x-axis">
+                                        <span v-for="tick in indexTrendTicks(item)" :key="tick.key">{{ tick.label }}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <div data-testid="index-pagination" class="pagination-bar">
+                  <div class="pagination-controls">
+                    <button data-testid="index-prev" class="pager-arrow" type="button" :disabled="indexPagination.page <= 1" aria-label="上一页" @click="goIndexPage(indexPagination.page - 1)">‹</button>
+                    <template v-for="item in visibleIndexPages" :key="item.key">
+                      <span v-if="item.ellipsis" class="pager-ellipsis">...</span>
+                      <button v-else :data-testid="`index-page-${item.page}`" class="pager-page" :class="{ active: item.page === indexPagination.page }" type="button" @click="goIndexPage(item.page)">{{ item.label }}</button>
+                    </template>
+                    <button data-testid="index-next" class="pager-arrow" type="button" :disabled="indexPagination.page >= totalIndexPages" aria-label="下一页" @click="goIndexPage(indexPagination.page + 1)">›</button>
+                    <label class="page-size-select"><select v-model.number="indexPageSize" data-testid="index-page-size" class="select compact-select" @change="reloadIndexFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label>
+                  </div>
+                </div>
+              </article>
             </div>
           </section>
 
           <section v-if="currentModule === 'search'" data-testid="search-page" class="tab-panel">
             <div class="panel-header"><h2><span class="page-icon page-icon-search">SP</span>搜索页</h2><span class="badge">SPL / 时间筛选</span></div>
             <div class="search-layout">
-              <div class="search-row"><textarea v-model="searchQuery" class="search-box" rows="1" aria-label="SPL 搜索语句" placeholder="请输入 SPL语句"></textarea><select v-model="searchTime" data-testid="search-time" class="select"><option v-for="option in timeOptions" :key="option">{{ option }}</option></select><button data-testid="search-button" class="btn" type="button" @click="runSearchFirstPage">查询</button><button class="btn ghost" type="button" @click="saveSearch">保存</button></div>
+              <div class="search-row"><textarea v-model="searchQuery" data-testid="search-query" class="search-box" rows="1" aria-label="SPL 搜索语句" placeholder="请输入 SPL语句"></textarea><select v-model="searchTime" data-testid="search-time" class="select"><option v-for="option in timeOptions" :key="option">{{ option }}</option></select><button data-testid="search-button" class="btn" type="button" @click="runSearchFirstPage">查询</button><button class="btn ghost" type="button" @click="saveSearch">保存</button></div>
               <div data-testid="time-help" class="time-help">高级时间：<code>@d</code> 表示当天 0 点，<code>earliest=@d latest=now</code> 表示今天 0 点到当前时间，<code>-7d@d</code> 表示 7 天前 0 点。</div>
               <div data-testid="timeline-chart" class="timeline timeline-shell" :class="{ empty: !timelineBars.length }"><div v-if="timelineBars.length" data-testid="timeline-y-axis" class="timeline-y-axis"><span v-for="label in timelineYAxisLabels" :key="label">{{ label }}</span></div><div class="timeline-plot"><div v-if="!timelineBars.length" class="timeline-empty">{{ timelineStatus }}</div><div v-else class="timeline-bars"><div v-for="bucket in timelineBars" :key="bucket.start" data-testid="timeline-bar" class="bar" :title="timelineTooltip(bucket)" :style="{ height: `${bucket.height}%` }"></div></div><div v-if="timelineBars.length" data-testid="timeline-x-axis" class="timeline-x-axis"><span v-for="tick in timelineTicks" :key="tick.key">{{ tick.label }}</span></div></div></div>
               <div class="search-toolbar"><div data-testid="saved-summary" class="saved-summary"><strong>保存搜索</strong><span>仅占一行，点击查看</span><span class="count">{{ savedSearches.length }}</span></div><button data-testid="toggle-saved-searches" class="btn ghost" type="button" @click="toggleSavedSearches">{{ savedOpen ? "收起保存搜索" : "查看保存搜索" }}</button></div>
               <div v-if="savedSearchError" data-testid="saved-search-error" class="field-error">{{ savedSearchError }}</div>
               <div v-if="savedOpen" class="saved-drawer"><div class="drawer-head"><span>已保存搜索</span><span class="status-line">查询 / 删除 / 回填</span></div><div class="table-wrap"><table><thead><tr><th>SPL</th><th>时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in savedSearches" :key="item.id" :data-testid="`saved-search-row-${item.id}`"><td><code>{{ item.query }}</code></td><td>{{ item.time }}</td><td><div class="row-actions"><button class="link-btn" type="button" @click="useSearch(item)">回填</button><button class="link-btn delete" type="button" :data-testid="`delete-saved-search-${item.id}`" @click="deleteSavedSearch(item.id)">删除</button></div></td></tr></tbody></table></div></div>
-              <article class="card"><div class="card-head result-head"><div><span>搜索结果</span><div class="result-meta">{{ resultStatus }}</div></div><span data-testid="result-mode" class="mode-pill">{{ resultMode === "stats" ? "统计视图" : "事件视图" }}</span></div><div data-testid="search-results" class="table-wrap"><table class="result-table"><thead><tr v-if="resultMode === 'stats'"><th v-for="field in statsFields" :key="field">{{ field }}</th></tr><tr v-else><th class="expand-col"></th><th>时间</th><th>事件</th></tr></thead><tbody><tr v-if="!searchResults.length"><td :colspan="resultMode === 'stats' ? Math.max(statsFields.length, 1) : 3">暂无匹配结果</td></tr><template v-for="(item, rowIndex) in searchResults" :key="item.id || item.group || rowIndex"><tr><template v-if="resultMode === 'stats'"><td v-for="field in statsFields" :key="field"><code>{{ formatStatsCell(field, item[field]) }}</code></td></template><template v-else><td><button :data-testid="`expand-event-${eventRowKey(item, rowIndex)}`" class="expand-toggle" type="button" @click="toggleEventDetail(item, rowIndex)">{{ isEventExpanded(item, rowIndex) ? "▼" : "▶" }}</button></td><td>{{ item.time }}</td><td><code class="multiline-code">{{ item.event }}</code></td></template></tr><tr v-if="resultMode !== 'stats' && isEventExpanded(item, rowIndex)" class="event-detail-row"><td></td><td colspan="2"><div class="event-detail"><div class="detail-raw"><span>raw</span><code class="multiline-code">{{ item.raw }}</code></div><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr v-for="(row, detailIndex) in item.detailRows" :key="`${row.name}-${detailIndex}`"><td><code>{{ row.name }}</code></td><td><code>{{ formatDetailValue(row.value) }}</code></td></tr></tbody></table></div></td></tr></template></tbody></table></div><div data-testid="search-pagination" class="pagination-bar"><div data-testid="search-pagination-right" class="pagination-controls"><button data-testid="search-prev" class="pager-arrow" type="button" :disabled="searchPagination.page <= 1 || isSearchLoading" aria-label="上一页" @click="goSearchPage(searchPagination.page - 1)">‹</button><template v-for="item in visibleSearchPages" :key="item.key"><span v-if="item.ellipsis" class="pager-ellipsis">...</span><button v-else :data-testid="`search-page-${item.page}`" class="pager-page" :class="{ active: item.page === searchPagination.page }" type="button" :disabled="isSearchLoading" @click="goSearchPage(item.page)">{{ item.label }}</button></template><button data-testid="search-next" class="pager-arrow" type="button" :disabled="searchPagination.page >= totalSearchPages || isSearchLoading" aria-label="下一页" @click="goSearchPage(searchPagination.page + 1)">›</button><label class="page-size-select"><select v-model.number="searchPageSize" data-testid="search-page-size" class="select compact-select" @change="runSearchFirstPage"><option v-for="size in searchPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label></div></div></article>
+              <article class="card"><div class="card-head result-head"><div><span>搜索结果</span><div class="result-meta">{{ resultStatus }}</div></div><span data-testid="result-mode" class="mode-pill">{{ resultMode === "stats" ? "统计视图" : (resultMode === "table" ? "表格视图" : "事件视图") }}</span></div><div data-testid="search-results" class="table-wrap"><table class="result-table"><thead><tr v-if="resultMode === 'stats' || resultMode === 'table'"><th v-for="field in statsFields" :key="field">{{ field }}</th></tr><tr v-else><th class="expand-col"></th><th>时间</th><th>事件</th></tr></thead><tbody><tr v-if="!searchResults.length"><td :colspan="resultMode === 'stats' || resultMode === 'table' ? Math.max(statsFields.length, 1) : 3">暂无匹配结果</td></tr><template v-for="(item, rowIndex) in searchResults" :key="item.id || item.group || rowIndex"><tr><template v-if="resultMode === 'stats' || resultMode === 'table'"><td v-for="field in statsFields" :key="field"><code>{{ formatStatsCell(field, item[field]) }}</code></td></template><template v-else><td><button :data-testid="`expand-event-${eventRowKey(item, rowIndex)}`" class="expand-toggle" type="button" @click="toggleEventDetail(item, rowIndex)">{{ isEventExpanded(item, rowIndex) ? "▼" : "▶" }}</button></td><td>{{ item.time }}</td><td><code class="multiline-code">{{ item.event }}</code></td></template></tr><tr v-if="resultMode === 'events' && isEventExpanded(item, rowIndex)" class="event-detail-row"><td></td><td colspan="2"><div class="event-detail"><div class="detail-raw"><span>raw</span><code class="multiline-code">{{ item.raw }}</code></div><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr v-for="(row, detailIndex) in item.detailRows" :key="`${row.name}-${detailIndex}`"><td><code>{{ row.name }}</code></td><td><code>{{ formatDetailValue(row.value) }}</code></td></tr></tbody></table></div></td></tr></template></tbody></table></div><div data-testid="search-pagination" class="pagination-bar"><div data-testid="search-pagination-right" class="pagination-controls"><button data-testid="search-prev" class="pager-arrow" type="button" :disabled="searchPagination.page <= 1 || isSearchLoading" aria-label="上一页" @click="goSearchPage(searchPagination.page - 1)">‹</button><template v-for="item in visibleSearchPages" :key="item.key"><span v-if="item.ellipsis" class="pager-ellipsis">...</span><button v-else :data-testid="`search-page-${item.page}`" class="pager-page" :class="{ active: item.page === searchPagination.page }" type="button" :disabled="isSearchLoading" @click="goSearchPage(item.page)">{{ item.label }}</button></template><button data-testid="search-next" class="pager-arrow" type="button" :disabled="searchPagination.page >= totalSearchPages || isSearchLoading" aria-label="下一页" @click="goSearchPage(searchPagination.page + 1)">›</button><label class="page-size-select"><select v-model.number="searchPageSize" data-testid="search-page-size" class="select compact-select" @change="runSearchFirstPage"><option v-for="size in searchPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label></div></div></article>
             </div>
           </section>
 
@@ -231,30 +329,114 @@
                   </button>
                 </div>
                 <div class="plugin-upload-panel">
-                  <label>插件包上传<input data-testid="plugin-upload-file" class="field" type="file" accept=".zip,application/zip" @change="onPluginFileChange" /></label>
+                  <label class="plugin-file-field"><span>插件包上传</span><span class="plugin-file-control"><input data-testid="plugin-upload-file" class="plugin-file-input" type="file" accept=".zip,application/zip" @change="onPluginFileChange" /><span class="plugin-file-button">选择插件包</span><span data-testid="plugin-upload-filename" class="plugin-file-name">{{ pluginUploadFileName }}</span></span></label>
                   <button data-testid="plugin-upload-button" class="btn" type="button" @click="uploadPluginPackage">导入插件包</button>
                   <span data-testid="plugin-upload-status" class="status-line">{{ pluginUploadStatus }}</span>
                 </div>
-                <p v-if="pluginUploadError" class="field-error form-error">{{ pluginUploadError }}</p>
+                <p v-if="pluginUploadError" data-testid="plugin-upload-error" class="field-error form-error">{{ pluginUploadError }}</p>
               </article>
 
               <article class="card">
-                <div class="card-head"><span>{{ currentPluginTabLabel }}</span><span class="status-line">{{ filteredPlugins.length }} 个插件</span></div>
+                <div class="card-head"><span>{{ currentPluginTabLabel }}</span><span class="status-line">{{ currentPluginPagination.total }} 个插件</span></div>
                 <div class="table-wrap">
                   <table>
-                    <thead><tr><th>插件名称</th><th>编码</th><th>版本</th><th>运行时</th><th>状态</th><th>校验值</th></tr></thead>
+                    <thead><tr><th>插件名称</th><th>编码</th><th>版本</th><th>运行时</th><th>状态</th><th>校验值</th><th>操作</th></tr></thead>
                     <tbody>
-                      <tr v-if="!filteredPlugins.length"><td colspan="6">暂无插件</td></tr>
-                      <tr v-for="item in filteredPlugins" :key="`${item.plugin_type}-${item.plugin_code}-${item.plugin_version}`">
-                        <td>{{ item.name || item.plugin_code }}</td>
-                        <td><code>{{ item.plugin_code }}</code></td>
-                        <td>{{ item.plugin_version || "1.0.0" }}</td>
-                        <td>{{ item.runtime || "go_builtin" }}</td>
-                        <td><span class="status-pill" :class="item.status === 'active' ? 'runtime-running' : 'runtime-stopped'">{{ pluginStatusLabel(item.status) }}</span></td>
-                        <td><code class="muted-code">{{ item.checksum || "builtin" }}</code></td>
-                      </tr>
+                      <tr v-if="!filteredPlugins.length"><td colspan="7">暂无插件</td></tr>
+                      <template v-for="item in filteredPlugins" :key="`${item.plugin_type}-${item.plugin_code}-${item.plugin_version}`">
+                        <tr :data-testid="`plugin-row-${item.plugin_code}-${item.plugin_version || '1.0.0'}`">
+                          <td>{{ item.name || item.plugin_code }}</td>
+                          <td><code>{{ item.plugin_code }}</code></td>
+                          <td>{{ item.plugin_version || "1.0.0" }}</td>
+                          <td>{{ item.runtime || "go_builtin" }}</td>
+                          <td><span class="status-pill" :class="isPluginEnabled(item.status) ? 'runtime-running' : 'runtime-stopped'">{{ pluginStatusLabel(item.status) }}</span></td>
+                          <td><code class="muted-code">{{ item.checksum || "builtin" }}</code></td>
+                          <td>
+                            <span v-if="isBuiltInPlugin(item)" class="status-line">内置基础能力</span>
+                            <div v-else class="row-actions plugin-row-actions">
+                              <button :data-testid="`plugin-detail-${item.plugin_code}`" class="plugin-action plugin-action-detail" type="button" @click="loadPluginDetail(item)">{{ isPluginDetailOpen(item) ? "收起详情" : "查看详情" }}</button>
+                              <button v-if="!isPluginEnabled(item.status)" :data-testid="`plugin-enable-${item.plugin_code}`" class="plugin-action plugin-action-enable" type="button" @click="setPluginStatus(item, 'enable')">启用</button>
+                              <button v-if="isPluginEnabled(item.status)" :data-testid="`plugin-disable-${item.plugin_code}`" class="plugin-action plugin-action-disable" type="button" @click="setPluginStatus(item, 'disable')">停用</button>
+                              <button v-if="!isPluginEnabled(item.status)" :data-testid="`plugin-delete-${item.plugin_code}`" class="plugin-action plugin-action-delete" type="button" @click="deletePlugin(item)">删除</button>
+                            </div>
+                          </td>
+                        </tr>
+                        <tr v-if="isPluginDetailOpen(item)" :data-testid="`plugin-detail-row-${item.plugin_code}`" class="plugin-detail-inline-row">
+                          <td colspan="7">
+                            <article data-testid="plugin-detail-panel" class="plugin-detail-inline">
+                              <div class="card-head">
+                                <span>{{ selectedPlugin.name || selectedPlugin.plugin_code }}</span>
+                                <span class="status-line">引用 {{ pluginReferenceCount }} 处</span>
+                              </div>
+                              <div class="runtime-detail-grid plugin-detail-grid">
+                                <div><span>插件编码</span><strong>{{ selectedPlugin.plugin_code }}</strong></div>
+                                <div><span>插件类型</span><strong>{{ selectedPlugin.plugin_type }}</strong></div>
+                                <div><span>当前版本</span><strong>{{ selectedPlugin.plugin_version }}</strong></div>
+                                <div><span>运行时</span><strong>{{ selectedPlugin.runtime || "go_builtin" }}</strong></div>
+                                <div><span>状态</span><strong>{{ pluginStatusLabel(selectedPlugin.status) }}</strong></div>
+                                <div><span>Checksum</span><strong>{{ selectedPlugin.checksum || "builtin" }}</strong></div>
+                                <div v-if="selectedPlugin.entrypoint" class="topology"><span>Entrypoint</span><small>{{ selectedPlugin.entrypoint }}</small></div>
+                                <div v-if="pluginEffectiveRuntimeConfig" class="topology"><span>执行限制</span><small>{{ pluginEffectiveRuntimeText }}</small></div>
+                                <div v-if="selectedPlugin.description" class="topology"><span>说明</span><small>{{ selectedPlugin.description }}</small></div>
+                                <div class="topology"><span>Config Schema</span><small>{{ pluginSchemaText }}</small></div>
+                                <div class="topology"><span>UI Schema</span><small>{{ pluginUISchemaText }}</small></div>
+                              </div>
+                              <div v-if="selectedPlugin.plugin_type !== 'search_command'" class="table-wrap plugin-reference-table">
+                                <table>
+                                  <thead><tr><th>引用类型</th><th>引用对象</th><th>状态</th></tr></thead>
+                                  <tbody>
+                                    <tr v-if="!pluginReferenceItems.length"><td colspan="3">暂无引用</td></tr>
+                                    <tr v-for="ref in pluginReferenceItems" :key="`${ref.type}-${ref.id || ref.name}`">
+                                      <td>{{ referenceTypeLabel(ref.type) }}</td>
+                                      <td>{{ ref.name || ref.id || "-" }}</td>
+                                      <td>{{ ref.status || "-" }}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                              <div v-if="showPluginExecutionAudits" data-testid="plugin-execution-audits" class="table-wrap plugin-reference-table">
+                                <div class="card-head"><span>最近执行记录</span><span class="status-line">{{ pluginExecutionAudits.length }} 条</span></div>
+                                <table>
+                                  <thead><tr><th>执行时间</th><th>命令</th><th>耗时</th><th>输入事件数</th><th>输出事件数</th><th>状态</th><th>错误码</th></tr></thead>
+                                  <tbody>
+                                    <tr v-if="pluginExecutionAuditLoading"><td colspan="7">执行审计加载中...</td></tr>
+                                    <tr v-else-if="!pluginExecutionAudits.length"><td colspan="7">暂无执行记录</td></tr>
+                                    <tr v-for="audit in pluginExecutionAudits" :key="`${audit.request_id}-${audit.command_name}-${audit.created_at}`">
+                                      <td>{{ formatFullTime(audit.created_at) }}</td>
+                                      <td><code>{{ audit.command_name || "-" }}</code></td>
+                                      <td>{{ audit.elapsed_ms ?? 0 }}ms</td>
+                                      <td>{{ formatRuntimeNumber(audit.input_rows) }} 条</td>
+                                      <td>{{ formatRuntimeNumber(audit.output_rows) }} 条</td>
+                                      <td><span class="status-pill" :class="audit.success ? 'runtime-running' : 'runtime-stopped'">{{ audit.success ? "成功" : "失败" }}</span></td>
+                                      <td><code class="muted-code">{{ audit.error_code || "-" }}</code></td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                                <p v-if="pluginExecutionAuditError" class="field-error form-error">{{ pluginExecutionAuditError }}</p>
+                              </div>
+                              <div class="plugin-current-actions">
+                                <span v-if="isPluginReferenced(selectedPlugin)" class="status-line">被引用，不能停用或删除</span>
+                                <span v-else class="status-line">启停与删除操作可直接在插件行操作列执行</span>
+                              </div>
+                              <p v-if="pluginActionStatus" class="status-line">{{ pluginActionStatus }}</p>
+                              <p v-if="pluginActionError" class="field-error form-error">{{ pluginActionError }}</p>
+                            </article>
+                          </td>
+                        </tr>
+                      </template>
                     </tbody>
                   </table>
+                </div>
+                <div data-testid="plugin-pagination" class="pagination-bar">
+                  <div class="pagination-controls">
+                    <button data-testid="plugin-prev" class="pager-arrow" type="button" :disabled="currentPluginPagination.page <= 1" aria-label="上一页" @click="goPluginPage(currentPluginPagination.page - 1)">‹</button>
+                    <template v-for="item in visiblePluginPages" :key="item.key">
+                      <span v-if="item.ellipsis" class="pager-ellipsis">...</span>
+                      <button v-else :data-testid="`plugin-page-${item.page}`" class="pager-page" :class="{ active: item.page === currentPluginPagination.page }" type="button" @click="goPluginPage(item.page)">{{ item.label }}</button>
+                    </template>
+                    <button data-testid="plugin-next" class="pager-arrow" type="button" :disabled="currentPluginPagination.page >= totalPluginPages" aria-label="下一页" @click="goPluginPage(currentPluginPagination.page + 1)">›</button>
+                    <label class="page-size-select"><select v-model.number="currentPluginPageSize" data-testid="plugin-page-size" class="select compact-select" @change="reloadPluginFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label>
+                  </div>
                 </div>
               </article>
             </div>
@@ -279,15 +461,12 @@ const lastProtectedPayload = ref("");
 const modules = [{ key: "collect", label: "采集配置" }, { key: "parse", label: "解析配置" }, { key: "index", label: "索引配置" }, { key: "search", label: "搜索页" }, { key: "plugins", label: "插件管理" }];
 const currentModule = ref(defaultModuleKey);
 
-const inputConfigs = ref([
-  { id: "in-1", name: "Firewall Syslog", plugin: "Syslog", status: "active", internalRawTopic: "raw.ds_firewall_syslog", collectorPort: "5514", transportProtocol: "TCP", encoding: "UTF-8", logFilterEnabled: "on", logFilterRegex: "action=(allow|deny)" },
-  { id: "in-2", name: "Kafka Stream", plugin: "Kafka", status: "disabled", internalRawTopic: "raw.ds_kafka_stream", brokers: "10.0.0.1:9092,10.0.0.2:9092", topic: "xdp-events", consumerGroup: "xdp-consumer", securityProtocol: "PLAINTEXT", consumeStrategy: "最早", logFilterEnabledKafka: "off" }
-]);
-const parseRules = ref([{ id: "rule-regex", name: "Firewall Regex", plugin: "正则解析插件", dataSourceName: "Firewall Syslog", inputRoute: "raw.ds_firewall_syslog", outputIndex: "firewall", propsConf: "[source::firewall]\nEXTRACT-custom = src=(?<src_ip>\\S+)" }]);
+const inputConfigs = ref([]);
+const parseRules = ref([]);
 const parserPlugins = ref([]);
 const parseConfigLoaded = ref(false);
 const indexConfigLoaded = ref(false);
-const indexes = ref([{ id: "idx-1", name: "app", ttl: 30, rows: 179497, status: "active" }, { id: "idx-2", name: "firewall", ttl: 30, rows: 42013, status: "active" }, { id: "idx-3", name: "audit", ttl: 7, rows: 0, status: "active" }]);
+const indexes = ref([]);
 const inputForm = reactive(defaultInputForm());
 const ruleForm = reactive(defaultRuleForm());
 const generatedPropsConf = ref("");
@@ -301,6 +480,8 @@ const showIndexForm = ref(false);
 const inputPortError = ref("");
 const inputNameError = ref("");
 const inputFormError = ref("");
+const inputFormNotice = ref("");
+const kafkaConnectivityStatus = ref("");
 const ruleFormError = ref("");
 const indexFormError = ref("");
 const selectedRuntimeId = ref("");
@@ -327,6 +508,9 @@ const indexPageSize = ref(10);
 const collectPagination = ref(defaultListPagination());
 const parsePagination = ref(defaultListPagination());
 const indexPagination = ref(defaultListPagination());
+const writerRuntime = ref({});
+const writerRuntimeLoading = ref(false);
+const writerRuntimeError = ref("");
 const searchPageSizes = [20, 50, 100, 1000];
 const searchPageSize = ref(20);
 const searchPagination = ref({ limit: 20, offset: 0, page: 1, returned: 0, hasMore: false, total: 0 });
@@ -343,10 +527,29 @@ const pluginTabs = [
 ];
 const currentPluginTab = ref("input");
 const pluginCatalog = ref([]);
-const pluginsLoaded = ref(false);
+const pluginCatalogLoaded = reactive({ input: false, parser: false, search_command: false });
+const pluginCatalogLoading = reactive({ input: false, parser: false, search_command: false });
+const pluginCatalogErrors = reactive({ input: "", parser: "", search_command: "" });
+const pluginManagementItems = reactive({ input: [], parser: [], search_command: [] });
+const pluginManagementLoaded = reactive({ input: false, parser: false, search_command: false });
+const pluginManagementSupportsPagination = reactive({ input: false, parser: false, search_command: false });
+const pluginPaginationByType = reactive({
+  input: defaultListPagination(),
+  parser: defaultListPagination(),
+  search_command: defaultListPagination()
+});
+const pluginPageSizeByType = reactive({ input: 10, parser: 10, search_command: 10 });
+const pluginTypeCounts = reactive({ input: 0, parser: 0, search_command: 0 });
 const pluginUploadFile = ref(null);
 const pluginUploadStatus = ref("");
 const pluginUploadError = ref("");
+const selectedPlugin = ref(null);
+const pluginSchema = ref(null);
+const pluginActionStatus = ref("");
+const pluginActionError = ref("");
+const pluginExecutionAudits = ref([]);
+const pluginExecutionAuditError = ref("");
+const pluginExecutionAuditLoading = ref(false);
 const catalog = [
   { id: "evt-1", time: timeAgo(0, 0, 12), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "api-01", service: "api", action: "allow", bytes: 1024, event: 'service=api level=info msg="login ok" bytes=1024' },
   { id: "evt-2", time: timeAgo(0, 0, 36), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "web-01", service: "api", action: "allow", bytes: 3840, event: 'service=api level=warn msg="slow request" bytes=3840' },
@@ -358,10 +561,30 @@ const counts = computed(() => ({
   parse: Number(parsePagination.value.total || parseRules.value.length),
   index: Number(indexPagination.value.total || indexes.value.length),
   search: savedSearches.value.length,
-  plugins: pluginCatalog.value.length
+  plugins: Object.values(pluginTypeCounts).reduce((sum, value) => sum + Number(value || 0), 0)
 }));
 const businessIndexes = computed(() => indexes.value.filter((item) => !isSystemIndex(item)));
 const selectedRuntimeName = computed(() => inputConfigs.value.find((item) => item.id === selectedRuntimeId.value)?.name || "");
+const kafkaInputPlugin = computed(() => pluginCatalog.value.find((item) => item.plugin_type === "input" && item.plugin_code === "kafka" && isPluginEnabled(item.status)) || null);
+const parserPluginOptions = computed(() => {
+  const items = pluginCatalog.value.filter((item) => item.plugin_type === "parser" && isPluginEnabled(item.status));
+  const regex = items.find((item) => item.plugin_code === "regex") || {
+    plugin_code: "regex",
+    plugin_type: "parser",
+    plugin_version: "1.0.0",
+    name: "Regex Parser",
+    status: "enabled",
+    checksum: "builtin"
+  };
+  return dedupePlugins([regex, ...items.filter((item) => item.plugin_code !== "regex")]);
+});
+const inputPluginBadge = computed(() => kafkaInputPlugin.value ? "Syslog / Kafka" : "Syslog / 导入插件");
+const kafkaSchemaProperties = computed(() => kafkaInputPlugin.value?.config_schema?.properties || {});
+const kafkaSchemaOrder = computed(() => {
+  const order = kafkaInputPlugin.value?.ui_schema?.order;
+  return Array.isArray(order) && order.length ? order : ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled", "log_filter_regex"];
+});
+const kafkaFormFields = computed(() => kafkaSchemaOrder.value.map(kafkaFieldFromSchema).filter(Boolean));
 const runtimeDetailSummary = computed(() => {
   if (runtimeDetail.value) return collectRuntimeSummary(runtimeDetail.value);
   const item = inputConfigs.value.find((current) => current.id === selectedRuntimeId.value);
@@ -396,11 +619,23 @@ const visibleSearchPages = computed(() => {
   });
   return tokens;
 });
+const currentPluginPagination = computed(() => pluginPaginationByType[currentPluginTab.value] || defaultListPagination());
+const currentPluginPageSize = computed({
+  get: () => pluginPageSizeByType[currentPluginTab.value] || 10,
+  set: (value) => {
+    pluginPageSizeByType[currentPluginTab.value] = Number(value) || 10;
+  }
+});
+const totalPluginPages = computed(() => totalListPages(currentPluginPagination.value, currentPluginPageSize.value));
+const visiblePluginPages = computed(() => visiblePageTokens(totalPluginPages.value, currentPluginPagination.value.page));
+const pluginUploadFileName = computed(() => pluginUploadFile.value?.name || "未选择文件");
 onMounted(loadAuthStatus);
 watch(() => [
   ruleForm.name,
-  ruleForm.plugin,
+  ruleForm.pluginCode,
   ruleForm.regexPattern,
+  ruleForm.jsonArrayMode,
+  ruleForm.jsonInvalidPolicy,
   ruleForm.kvPairDelimiter,
   ruleForm.kvDelimiter,
   ruleForm.kvQuote,
@@ -410,13 +645,7 @@ watch(() => [
 ], () => syncPropsConf(), { immediate: true });
 watch(currentModule, async (module) => {
   persistCurrentModule(module);
-  if (module === "parse") {
-    await loadIndexConfig();
-    await loadParseConfig();
-  }
-  if (module === "index") await loadIndexConfig();
-  if (module === "search" && !savedSearchesLoaded.value) await loadSavedSearches();
-  if (module === "plugins" && !pluginsLoaded.value) await loadPlugins();
+  await refreshCurrentModule(module, true);
 });
 
 function navCount(key) { return counts.value[key] || 0; }
@@ -456,11 +685,39 @@ function logout() {
   localStorage.removeItem(tokenKey);
   localStorage.removeItem(currentModuleKey);
   lastProtectedPayload.value = "";
+  pluginCatalog.value = [];
+  for (const type of Object.keys(pluginCatalogLoaded)) {
+    pluginCatalogLoaded[type] = false;
+    pluginCatalogLoading[type] = false;
+    pluginCatalogErrors[type] = "";
+  }
   screen.value = "login";
 }
 function selectModule(moduleKey) {
   if (!isValidModule(moduleKey)) return;
+  if (currentModule.value === moduleKey) {
+    refreshCurrentModule(moduleKey, true);
+    return;
+  }
   currentModule.value = moduleKey;
+}
+async function refreshCurrentModule(module, force = false) {
+  if (module === "collect") {
+    await Promise.all([loadCollectConfig(collectPagination.value.page || 1), loadPluginCatalog("input", force)]);
+  }
+  if (module === "parse") {
+    await Promise.all([loadIndexConfig(force), loadParseConfig(force), loadPluginCatalog("parser", force)]);
+  }
+  if (module === "index") {
+    await Promise.all([loadIndexConfig(force), loadWriterRuntime(force)]);
+  }
+  if (module === "search") {
+    await loadSavedSearches(force);
+  }
+  if (module === "plugins") {
+    await loadPlugins(force);
+    if (pluginManagementSupportsPagination[currentPluginTab.value]) await loadPluginCatalog(currentPluginTab.value, force);
+  }
 }
 function readStoredModule() {
   const stored = localStorage.getItem(currentModuleKey);
@@ -546,6 +803,7 @@ async function reloadIndexFirstPage() {
 async function loadProtectedData() {
   try {
     await Promise.all([loadCollectConfig(), loadIndexConfig(true), loadParseConfig(true), loadSavedSearches()]);
+    await loadPluginCatalog("input");
   } catch {
     lastProtectedPayload.value = "";
   }
@@ -588,17 +846,88 @@ async function loadIndexConfig(force = false, page = indexPagination.value.page 
     indexConfigLoaded.value = false;
   }
 }
-async function loadPlugins(force = false) {
-  if (pluginsLoaded.value && !force) return;
+async function loadWriterRuntime(force = false) {
+  if (writerRuntimeLoading.value && !force) return;
+  writerRuntimeLoading.value = true;
+  writerRuntimeError.value = "";
   try {
-    const payload = await requestJSON("/api/v1/plugins", { auth: true });
-    const items = Array.isArray(payload.plugins) ? payload.plugins : (Array.isArray(payload) ? payload : []);
-    pluginCatalog.value = items.map(apiPluginToForm).filter(isProductVisiblePlugin);
-    pluginsLoaded.value = true;
+    writerRuntime.value = await requestJSON("/api/v1/writer/runtime", { auth: true });
+  } catch (error) {
+    writerRuntime.value = { status: "unknown" };
+    writerRuntimeError.value = error.message || "Writer 状态加载失败";
+  } finally {
+    writerRuntimeLoading.value = false;
+  }
+}
+async function loadPlugins(force = false, type = currentPluginTab.value, page = pluginPaginationByType[type]?.page || 1) {
+  if (pluginManagementLoaded[type] && !force && pluginPaginationByType[type]?.page === page) return;
+  try {
+    const pageSize = pluginPageSizeByType[type] || 10;
+    const params = new URLSearchParams({
+      plugin_type: type,
+      page: String(Math.max(1, Number(page) || 1)),
+      page_size: String(pageSize)
+    });
+    const payload = await requestJSON(`/api/v1/plugins?${params.toString()}`, { auth: true });
+    const rawItems = Array.isArray(payload.plugins) ? payload.plugins : (Array.isArray(payload) ? payload : []);
+    const items = dedupePlugins(rawItems.map(apiPluginToForm).filter(isProductVisiblePlugin));
+    const paginated = Boolean(payload.pagination);
+    if (!paginated && new Set(items.map((item) => item.plugin_type)).size > 1) {
+      for (const tab of pluginTabs) {
+        const typedItems = items.filter((item) => item.plugin_type === tab.key);
+        pluginManagementItems[tab.key] = typedItems;
+        pluginPaginationByType[tab.key] = normalizeListPagination({}, typedItems.length, 1, pageSize);
+        pluginTypeCounts[tab.key] = typedItems.length;
+        pluginManagementLoaded[tab.key] = true;
+        pluginManagementSupportsPagination[tab.key] = false;
+      }
+    } else {
+      pluginManagementItems[type] = items.filter((item) => item.plugin_type === type);
+      pluginPaginationByType[type] = normalizeListPagination(payload.pagination, pluginManagementItems[type].length, page, pageSize);
+      Object.assign(pluginTypeCounts, payload.type_counts || {});
+      if (!payload.type_counts) pluginTypeCounts[type] = pluginPaginationByType[type].total;
+      pluginManagementLoaded[type] = true;
+      pluginManagementSupportsPagination[type] = paginated;
+    }
+    if (!paginated) {
+      const enabledInputs = items.filter((item) => item.plugin_type === "input" && isPluginEnabled(item.status));
+      if (enabledInputs.length) {
+        pluginCatalog.value = dedupePlugins([
+          ...pluginCatalog.value.filter((item) => item.plugin_type !== "input"),
+          ...enabledInputs
+        ]);
+        pluginCatalogLoaded.input = true;
+      }
+    }
   } catch (error) {
     pluginUploadError.value = error.message || "插件列表加载失败";
-    pluginsLoaded.value = false;
+    pluginManagementLoaded[type] = false;
   }
+}
+async function loadPluginCatalog(type = "input", force = false) {
+  if (pluginCatalogLoaded[type] && !force) return;
+  pluginCatalogLoading[type] = true;
+  pluginCatalogErrors[type] = "";
+  try {
+    const payload = await requestJSON(`/api/v1/plugins/catalog?plugin_type=${encodeURIComponent(type)}&status=enabled`, { auth: true });
+    const items = Array.isArray(payload.plugins) ? payload.plugins.map(apiPluginToForm).filter(isProductVisiblePlugin) : [];
+    pluginCatalog.value = dedupePlugins([
+      ...pluginCatalog.value.filter((item) => item.plugin_type !== type),
+      ...items
+    ]);
+    pluginCatalogLoaded[type] = true;
+  } catch (error) {
+    pluginCatalogLoaded[type] = false;
+    pluginCatalogErrors[type] = error.message || `${pluginTypeLabel(type)}目录加载失败`;
+  } finally {
+    pluginCatalogLoading[type] = false;
+  }
+}
+async function retryInputPluginCatalog() {
+  await loadPluginCatalog("input", true);
+}
+async function retryParserPluginCatalog() {
+  await loadPluginCatalog("parser", true);
 }
 async function requestJSON(url, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -613,23 +942,55 @@ async function requestJSON(url, options = {}) {
   return payload;
 }
 function errorMessage(payload, fallback) {
-  if (payload?.error?.message) return payload.error.message;
+  if (payload?.error?.message) {
+    return payload.error.code ? `${payload.error.code}: ${payload.error.message}` : payload.error.message;
+  }
   if (typeof payload.error === "string") return payload.error;
   return fallback || "请求失败";
 }
-function defaultInputForm() { return { name: "", status: "active", plugin: "Syslog", collectorPort: "5514", transportProtocol: "UDP", encoding: "UTF-8", logFilterEnabled: "off", logFilterRegex: "", transportProtocolKafka: "TCP", brokers: "", topic: "", consumerGroup: "", securityProtocol: "PLAINTEXT", consumeStrategy: "最早", encodingKafka: "UTF-8", logFilterEnabledKafka: "off", logFilterRegexKafka: "" }; }
-function defaultRuleForm() { return { name: "", plugin: "正则解析插件", dataSourceName: "", inputRoute: "internal_raw_topic", outputIndex: "app", priority: 100, sampleLog: "", regexPattern: "", kvPairDelimiter: "空格", kvDelimiter: "=", kvQuote: '"', delimitedDelimiter: ",", delimitedQuote: '"', delimitedFields: "field1,field2,field3", propsConf: "" }; }
+function defaultInputForm() { return { name: "", status: "active", plugin: "Syslog", collectorPort: "5514", transportProtocol: "UDP", encoding: "UTF-8", logFilterEnabled: "off", logFilterRegex: "", brokers: "", topic: "", consumerGroup: "", securityProtocol: "PLAINTEXT", startOffset: "earliest", encodingKafka: "UTF-8", logFilterEnabledKafka: "off", logFilterRegexKafka: "" }; }
+function defaultRuleForm() { return { name: "", plugin: "正则解析插件", pluginCode: "regex", pluginVersion: "1.0.0", dataSourceName: "", inputRoute: "internal_raw_topic", outputIndex: "app", priority: 100, sampleLog: "", regexPattern: "", jsonArrayMode: "json_string", jsonInvalidPolicy: "continue", kvPairDelimiter: "空格", kvDelimiter: "=", kvQuote: '"', delimitedDelimiter: ",", delimitedQuote: '"', delimitedFields: "field1,field2,field3", propsConf: "" }; }
 function defaultIndexForm() { return { name: "", ttl: 30, status: "active" }; }
 function assignReactive(target, source) { Object.keys(target).forEach((key) => delete target[key]); Object.assign(target, source); }
 const currentPluginTabLabel = computed(() => pluginTabs.find((item) => item.key === currentPluginTab.value)?.label || "插件列表");
-const filteredPlugins = computed(() => pluginCatalog.value.filter((item) => item.plugin_type === currentPluginTab.value));
-function selectPluginTab(tab) {
+const filteredPlugins = computed(() => pluginManagementItems[currentPluginTab.value] || []);
+const pluginReferenceCount = computed(() => Number(selectedPlugin.value?.references?.count || 0));
+const pluginReferenceItems = computed(() => Array.isArray(selectedPlugin.value?.references?.items) ? selectedPlugin.value.references.items : []);
+const pluginSchemaText = computed(() => JSON.stringify(pluginSchema.value?.config_schema || selectedPlugin.value?.config_schema || {}, null, 2));
+const pluginUISchemaText = computed(() => JSON.stringify(pluginSchema.value?.ui_schema || selectedPlugin.value?.ui_schema || {}, null, 2));
+const pluginEffectiveRuntimeConfig = computed(() => selectedPlugin.value?.effective_runtime_config || pluginSchema.value?.effective_runtime_config || null);
+const pluginEffectiveRuntimeText = computed(() => {
+  const config = pluginEffectiveRuntimeConfig.value || {};
+  return [
+    `interpreter=${config.interpreter || "-"}`,
+    `timeout_ms=${config.timeout_ms ?? "-"}`,
+    `max_input_rows=${config.max_input_rows ?? "-"}`,
+    `max_output_bytes=${config.max_output_bytes ?? "-"}`
+  ].join(" / ");
+});
+const showPluginExecutionAudits = computed(() => selectedPlugin.value?.plugin_type === "search_command" && !isBuiltInPlugin(selectedPlugin.value || {}));
+async function selectPluginTab(tab) {
   currentPluginTab.value = tab;
   pluginUploadStatus.value = "";
   pluginUploadError.value = "";
+  clearPluginDetail();
+  await loadPlugins(false, tab, pluginPaginationByType[tab]?.page || 1);
 }
 function pluginTypeCount(type) {
-  return pluginCatalog.value.filter((item) => item.plugin_type === type).length;
+  return Number(pluginTypeCounts[type] || 0);
+}
+async function goPluginPage(page) {
+  if (page < 1 || page > totalPluginPages.value) return;
+  await loadPlugins(true, currentPluginTab.value, page);
+}
+async function reloadPluginFirstPage() {
+  const type = currentPluginTab.value;
+  pluginPaginationByType[type] = { ...pluginPaginationByType[type], page: 1, page_size: currentPluginPageSize.value };
+  pluginManagementLoaded[type] = false;
+  await loadPlugins(true, type, 1);
+}
+function isPluginDetailOpen(item) {
+  return Boolean(selectedPlugin.value) && pluginIdentity(selectedPlugin.value) === pluginIdentity(item);
 }
 function onPluginFileChange(event) {
   pluginUploadFile.value = event.target.files?.[0] || null;
@@ -642,33 +1003,186 @@ async function uploadPluginPackage() {
     pluginUploadStatus.value = "请选择插件包";
     return;
   }
-  const formData = new FormData();
-  formData.append("file", pluginUploadFile.value);
-  formData.append("plugin_type", currentPluginTab.value);
+  const buildFormData = () => {
+    const formData = new FormData();
+    formData.append("file", pluginUploadFile.value);
+    return formData;
+  };
   try {
-    const imported = await requestJSON(`/api/v1/plugins/import?plugin_type=${encodeURIComponent(currentPluginTab.value)}`, {
+    const imported = await requestJSON("/api/v1/plugins/import", {
       auth: true,
       method: "POST",
-      body: formData
+      body: buildFormData()
     });
     const item = apiPluginToForm(imported);
-    pluginCatalog.value = upsertPlugin(pluginCatalog.value, item);
-    pluginsLoaded.value = true;
-    pluginUploadStatus.value = `导入成功：${item.name || item.plugin_code}`;
+    await applyImportedPlugin(item, imported);
   } catch (error) {
+    if (String(error.message || "").includes("PLUGIN_ALREADY_EXISTS") && window.confirm("插件已存在，是否覆盖已有插件包？")) {
+      try {
+        const imported = await requestJSON("/api/v1/plugins/import?overwrite=true", {
+          auth: true,
+          method: "POST",
+          body: buildFormData()
+        });
+        const item = apiPluginToForm(imported);
+        await applyImportedPlugin(item, imported);
+        pluginUploadStatus.value = `已覆盖：${item.name || item.plugin_code}`;
+        return;
+      } catch (overwriteError) {
+        pluginUploadError.value = overwriteError.message || "插件覆盖失败";
+        return;
+      }
+    }
     pluginUploadError.value = error.message || "插件导入失败";
   }
 }
+async function applyImportedPlugin(item, imported = {}) {
+  const type = normalizePluginType(item.plugin_type);
+  if (!type) return;
+  if (currentPluginTab.value !== type) currentPluginTab.value = type;
+  const exists = (pluginManagementItems[type] || []).some((current) => pluginIdentity(current) === pluginIdentity(item));
+  pluginManagementItems[type] = dedupePlugins(upsertPlugin(pluginManagementItems[type] || [], item));
+  pluginTypeCounts[type] = exists ? Math.max(Number(pluginTypeCounts[type] || 0), pluginManagementItems[type].length) : Math.max(Number(pluginTypeCounts[type] || 0) + 1, pluginManagementItems[type].length);
+  pluginPaginationByType[type] = {
+    ...pluginPaginationByType[type],
+    total: pluginTypeCounts[type],
+    total_pages: Math.max(1, Math.ceil(pluginTypeCounts[type] / (pluginPageSizeByType[type] || 10)))
+  };
+  pluginManagementLoaded[type] = true;
+  selectedPlugin.value = item;
+  pluginSchema.value = { config_schema: imported.config_schema || {}, ui_schema: imported.ui_schema || {} };
+  pluginUploadStatus.value = `导入成功：${item.name || item.plugin_code}`;
+  await loadPluginCatalog(type, true);
+}
+async function loadPluginDetail(item) {
+  pluginActionStatus.value = "";
+  pluginActionError.value = "";
+  pluginExecutionAuditError.value = "";
+  pluginExecutionAudits.value = [];
+  if (isPluginDetailOpen(item)) {
+    clearPluginDetail();
+    return;
+  }
+  const type = encodeURIComponent(item.plugin_type);
+  const code = encodeURIComponent(item.plugin_code);
+  try {
+    const detail = await requestJSON(`/api/v1/plugins/${code}?plugin_type=${type}`, { auth: true });
+    const schema = await requestJSON(`/api/v1/plugins/${code}/schema?plugin_type=${type}`, { auth: true });
+    selectedPlugin.value = { ...apiPluginToForm(detail), references: detail.references || { count: 0 }, config_schema: detail.config_schema || {}, ui_schema: detail.ui_schema || {} };
+    pluginSchema.value = schema || {};
+    if (showPluginExecutionAudits.value) await loadPluginExecutionAudits(selectedPlugin.value);
+  } catch (error) {
+    pluginActionError.value = error.message || "插件详情加载失败";
+  }
+}
+async function loadPluginExecutionAudits(plugin) {
+  pluginExecutionAuditLoading.value = true;
+  pluginExecutionAuditError.value = "";
+  pluginExecutionAudits.value = [];
+  const type = encodeURIComponent(plugin.plugin_type);
+  const code = encodeURIComponent(plugin.plugin_code);
+  try {
+    const payload = await requestJSON(`/api/v1/plugins/${code}/execution-audits?plugin_type=${type}&limit=20`, { auth: true });
+    pluginExecutionAudits.value = Array.isArray(payload.audits) ? payload.audits : [];
+  } catch (error) {
+    pluginExecutionAuditError.value = error.message || "执行审计加载失败";
+  } finally {
+    pluginExecutionAuditLoading.value = false;
+  }
+}
+async function setPluginStatus(plugin, action) {
+  pluginActionStatus.value = "";
+  pluginActionError.value = "";
+  const type = encodeURIComponent(plugin.plugin_type);
+  const code = encodeURIComponent(plugin.plugin_code);
+  try {
+    const updated = apiPluginToForm(await requestJSON(`/api/v1/plugins/${code}/${action}?plugin_type=${type}`, { auth: true, method: "POST" }));
+    const pluginType = normalizePluginType(updated.plugin_type);
+    pluginManagementItems[pluginType] = dedupePlugins(upsertPlugin(pluginManagementItems[pluginType] || [], updated));
+    syncPluginCatalogStatus(updated);
+    if (selectedPlugin.value?.plugin_code === updated.plugin_code) selectedPlugin.value = { ...selectedPlugin.value, ...updated };
+    pluginActionStatus.value = `${pluginStatusLabel(updated.status)}：${updated.name || updated.plugin_code}`;
+    await loadPluginCatalog(pluginType, true);
+  } catch (error) {
+    pluginActionError.value = error.message || "插件状态更新失败";
+  }
+}
+async function deletePlugin(plugin) {
+  pluginActionStatus.value = "";
+  pluginActionError.value = "";
+  const type = encodeURIComponent(plugin.plugin_type);
+  const code = encodeURIComponent(plugin.plugin_code);
+  try {
+    await requestJSON(`/api/v1/plugins/${code}?plugin_type=${type}`, { auth: true, method: "DELETE" });
+    const pluginType = normalizePluginType(plugin.plugin_type);
+    pluginManagementItems[pluginType] = (pluginManagementItems[pluginType] || []).filter((item) => pluginIdentity(item) !== pluginIdentity(plugin));
+    pluginTypeCounts[pluginType] = Math.max(0, Number(pluginTypeCounts[pluginType] || 0) - 1);
+    pluginPaginationByType[pluginType] = {
+      ...pluginPaginationByType[pluginType],
+      total: pluginTypeCounts[pluginType],
+      total_pages: Math.max(1, Math.ceil(pluginTypeCounts[pluginType] / (pluginPageSizeByType[pluginType] || 10)))
+    };
+    clearPluginDetail();
+    pluginActionStatus.value = "插件版本已删除";
+    await loadPluginCatalog(pluginType, true);
+  } catch (error) {
+    pluginActionError.value = error.message || "插件版本删除失败";
+  }
+}
+function syncPluginCatalogStatus(item) {
+  const type = normalizePluginType(item.plugin_type);
+  const withoutVersion = pluginCatalog.value.filter((current) => pluginIdentity(current) !== pluginIdentity(item));
+  pluginCatalog.value = isPluginEnabled(item.status) ? dedupePlugins([...withoutVersion, item]) : withoutVersion;
+  if (type in pluginCatalogLoaded) pluginCatalogLoaded[type] = true;
+}
+function clearPluginDetail() {
+  selectedPlugin.value = null;
+  pluginSchema.value = null;
+  pluginActionStatus.value = "";
+  pluginActionError.value = "";
+  pluginExecutionAudits.value = [];
+  pluginExecutionAuditError.value = "";
+  pluginExecutionAuditLoading.value = false;
+}
 function apiPluginToForm(item = {}) {
   return {
-    plugin_code: item.plugin_code || item.code || "",
+    plugin_code: String(item.plugin_code || item.code || "").trim(),
     plugin_type: normalizePluginType(item.plugin_type || item.type || ""),
-    plugin_version: item.plugin_version || item.version || "1.0.0",
-    name: item.name || item.plugin_code || item.code || "",
+    plugin_version: String(item.plugin_version || item.version || "1.0.0").trim() || "1.0.0",
+    name: item.name || String(item.plugin_code || item.code || "").trim(),
     runtime: item.runtime || "go_builtin",
+    entrypoint: item.entrypoint || "",
+    description: item.description || "",
     status: item.status || "disabled",
-    checksum: item.checksum || "builtin"
+    checksum: item.checksum || "builtin",
+    built_in: Boolean(item.built_in),
+    references: item.references || { count: 0 },
+    config_schema: item.config_schema || {},
+    ui_schema: item.ui_schema || {},
+    runtime_config: item.runtime_config || {},
+    effective_runtime_config: item.effective_runtime_config || null
   };
+}
+function isBuiltInPlugin(item = {}) {
+  const type = normalizePluginType(item.plugin_type);
+  const code = String(item.plugin_code || "").trim();
+  return item.built_in === true ||
+    type === "input" && code === "syslog" ||
+    type === "parser" && code === "regex" ||
+    type === "search_command" && code === "stats";
+}
+function isPluginReferenced(plugin = {}) {
+  if (!selectedPlugin.value) return false;
+  return selectedPlugin.value.plugin_code === plugin.plugin_code &&
+    normalizePluginType(selectedPlugin.value.plugin_type) === normalizePluginType(plugin.plugin_type) &&
+    pluginReferenceCount.value > 0;
+}
+function referenceTypeLabel(type) {
+  const value = String(type || "").trim();
+  if (value === "datasource") return "采集源";
+  if (value === "parse_rule") return "解析规则";
+  if (value === "saved_search") return "保存搜索";
+  return value || "-";
 }
 function isProductVisiblePlugin(item = {}) {
   const type = normalizePluginType(item.plugin_type);
@@ -681,7 +1195,7 @@ function isProductVisiblePlugin(item = {}) {
 }
 function isHiddenProductPlugin(type, code) {
   return type === "input" && code === "http-input" ||
-    type === "parser" && (code === "json-parser" || code === "props-conf-parser");
+    type === "parser" && code === "props-conf-parser";
 }
 function isImportedPlugin(item = {}) {
   const checksum = String(item.checksum || "").trim();
@@ -695,16 +1209,112 @@ function normalizePluginType(type) {
   return value;
 }
 function upsertPlugin(items, item) {
-  const key = (current) => `${current.plugin_type}/${current.plugin_code}@${current.plugin_version}`;
-  return items.some((current) => key(current) === key(item)) ? items.map((current) => key(current) === key(item) ? item : current) : [item, ...items];
+  return items.some((current) => pluginIdentity(current) === pluginIdentity(item)) ? items.map((current) => pluginIdentity(current) === pluginIdentity(item) ? { ...current, ...item } : current) : [item, ...items];
+}
+function dedupePlugins(items = []) {
+  const seen = new Set();
+  const result = [];
+  for (const raw of items) {
+    const item = apiPluginToForm(raw);
+    const key = pluginIdentity(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+function pluginIdentity(item = {}) {
+  return `${normalizePluginType(item.plugin_type)}/${String(item.plugin_code || "").trim()}`;
 }
 function pluginStatusLabel(status) {
-  return status === "active" ? "已启用" : "未启用";
+  return isPluginEnabled(status) ? "已启用" : "未启用";
+}
+function isPluginEnabled(status) {
+  return status === "active" || status === "enabled";
+}
+async function selectInputPlugin(plugin) {
+  if (editingInputId.value) return;
+  inputForm.plugin = plugin;
+  if (plugin === "Kafka") {
+    if (!kafkaInputPlugin.value) {
+      inputForm.plugin = "Syslog";
+      inputFormError.value = "请先在插件管理导入并启用 Kafka 插件";
+      return;
+    }
+    applyKafkaSchemaDefaults();
+  }
+}
+function kafkaFieldFromSchema(name) {
+  const property = kafkaSchemaProperties.value?.[name] || {};
+  const model = kafkaFieldModel(name);
+  if (!model) return null;
+  const enumValues = Array.isArray(property.enum) && property.enum.length ? property.enum : kafkaFieldFallbackEnum(name);
+  return {
+    name,
+    model,
+    label: property.title || kafkaFieldLabel(name),
+    testid: `kafka-${name.replaceAll("_", "-")}`,
+    kind: property.type === "boolean" || enumValues.length ? "select" : "input",
+    options: property.type === "boolean" ? [{ value: "off", label: "关闭" }, { value: "on", label: "开启" }] : enumValues.map((value) => ({ value, label: value })),
+    placeholder: kafkaFieldPlaceholder(name)
+  };
+}
+function kafkaFieldModel(name) {
+  return {
+    brokers: "brokers",
+    topic: "topic",
+    consumer_group: "consumerGroup",
+    start_offset: "startOffset",
+    security_protocol: "securityProtocol",
+    encoding: "encodingKafka",
+    log_filter_enabled: "logFilterEnabledKafka",
+    log_filter_regex: "logFilterRegexKafka"
+  }[name] || "";
+}
+function kafkaFieldLabel(name) {
+  return {
+    brokers: "Broker 地址",
+    topic: "Topic",
+    consumer_group: "消费组",
+    start_offset: "消费策略",
+    security_protocol: "通信协议",
+    encoding: "字符编码",
+    log_filter_enabled: "日志筛选",
+    log_filter_regex: "正则筛选"
+  }[name] || name;
+}
+function kafkaFieldPlaceholder(name) {
+  return {
+    brokers: "10.0.0.1:9092,10.0.0.2:9092",
+    topic: "xdp-events",
+    consumer_group: "xdp-consumer",
+    log_filter_regex: "^allow|^accept"
+  }[name] || "";
+}
+function kafkaFieldFallbackEnum(name) {
+  return {
+    start_offset: ["earliest", "latest"],
+    security_protocol: ["PLAINTEXT", "SASL_PLAINTEXT", "SASL_SSL", "SSL"],
+    encoding: ["UTF-8", "GBK", "ISO-8859-1"]
+  }[name] || [];
+}
+function applyKafkaSchemaDefaults() {
+  for (const field of kafkaFormFields.value) {
+    if (field.kind !== "select" || !field.options.length) continue;
+    const current = String(inputForm[field.model] || "");
+    if (!field.options.some((option) => String(option.value) === current)) {
+      inputForm[field.model] = field.options[0].value;
+    }
+  }
+}
+function isKafkaFieldVisible(field) {
+  return field.name !== "log_filter_regex" || inputForm.logFilterEnabledKafka === "on";
 }
 async function saveInput() {
   inputPortError.value = "";
   inputNameError.value = "";
   inputFormError.value = "";
+  inputFormNotice.value = "";
   const inputValidationError = validateInputForm(inputForm);
   if (inputValidationError) {
     inputFormError.value = inputValidationError;
@@ -725,7 +1335,9 @@ async function saveInput() {
   const item = apiSourceToInput(saved);
   if (!editingInputId.value) adjustListPaginationTotal(collectPagination, 1, collectPageSize.value);
   inputConfigs.value = editingInputId.value ? inputConfigs.value.map((current) => current.id === editingInputId.value ? item : current) : [item, ...inputConfigs.value];
+  const notice = request.plugin_code === "kafka" ? "Kafka 配置已保存，运行时消费将按状态热加载" : "";
   resetInputForm();
+  inputFormNotice.value = notice;
 }
 async function checkInputListenerPort(request) {
   try {
@@ -750,6 +1362,29 @@ async function checkInputListenerPort(request) {
     return false;
   }
 }
+async function checkKafkaConnectivity() {
+  inputFormError.value = "";
+  kafkaConnectivityStatus.value = "";
+  const validationMessage = validateKafkaConnectivityForm(inputForm);
+  if (validationMessage) {
+    kafkaConnectivityStatus.value = validationMessage;
+    return;
+  }
+  try {
+    const response = await requestJSON("/api/v1/datasources/connectivity-check", {
+      auth: true,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        plugin_code: "kafka",
+        plugin_config: inputFormToAPI({ ...inputForm, plugin: "Kafka" }).plugin_config
+      })
+    });
+    kafkaConnectivityStatus.value = response.message || "Kafka 连通性正常";
+  } catch (error) {
+    kafkaConnectivityStatus.value = error.message || "Kafka 连通性失败";
+  }
+}
 function openInputForm() {
   clearInputForm();
 }
@@ -757,6 +1392,8 @@ function clearInputForm() {
   inputPortError.value = "";
   inputNameError.value = "";
   inputFormError.value = "";
+  inputFormNotice.value = "";
+  kafkaConnectivityStatus.value = "";
   editingInputId.value = "";
   assignReactive(inputForm, defaultInputForm());
   showInputForm.value = true;
@@ -765,6 +1402,8 @@ function editInput(item) {
   inputPortError.value = "";
   inputNameError.value = "";
   inputFormError.value = "";
+  inputFormNotice.value = "";
+  kafkaConnectivityStatus.value = "";
   editingInputId.value = item.id;
   assignReactive(inputForm, { ...defaultInputForm(), ...item });
   showInputForm.value = true;
@@ -788,6 +1427,7 @@ function collectRuntimeSummary(item) {
   const runtimeStatus = String(item?.runtimeStatus || item?.runtime_status || "").toLowerCase();
   const listenerStatus = String(item?.listenerStatus || item?.listener_status || "").toLowerCase();
   if (runtimeStatus === "running" && listenerStatus === "listening") return { state: "running", label: "运行中" };
+  if (runtimeStatus === "running" && listenerStatus === "consuming") return { state: "running", label: "运行中" };
   if (runtimeStatus === "stopped" && listenerStatus === "stopped") return { state: "stopped", label: "已停止" };
   return { state: "error", label: "异常" };
 }
@@ -798,6 +1438,9 @@ function collectCanStart(item) {
   return collectRuntimeSummary(item).state === "stopped";
 }
 function collectListenerPortLabel(item) {
+  if (String(item.plugin || "").toLowerCase() === "kafka") {
+    return item.listenerEndpoint || "-";
+  }
   const port = String(item.collectorPort || parsePortFromEndpoint(item.listenerEndpoint) || "").trim();
   if (!port) return "-";
   const protocol = String(item.transportProtocol || item.transportProtocolKafka || "UDP").toUpperCase();
@@ -839,6 +1482,12 @@ function formatRuntimeValue(value) {
   const text = String(value || "").trim();
   return text || "暂无";
 }
+function formatFullTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
 function runtimeTopology(detail) {
   const fallbackRule = runtimeParseRuleFallback(detail);
   const parseRule = detail.parse_rule_name || detail.sourcetype || fallbackRule?.name || "未绑定解析规则";
@@ -878,7 +1527,27 @@ function validateInputForm(form) {
     if (!String(form.encoding || "").trim()) return "字符编码为必填项";
     if (form.logFilterEnabled === "on" && !String(form.logFilterRegex || "").trim()) return "正则筛选为必填项";
   }
-  if (form.plugin === "Kafka") return "Kafka 采集插件运行时能力未启用，P1 支持";
+  if (form.plugin === "Kafka") {
+    if (!String(form.brokers || "").trim()) return "Broker 地址为必填项";
+    if (!String(form.topic || "").trim()) return "Topic 为必填项";
+    if (!String(form.consumerGroup || "").trim()) return "消费组为必填项";
+    if (!String(form.startOffset || "").trim()) return "消费策略为必填项";
+    if (!String(form.securityProtocol || "").trim()) return "通信协议为必填项";
+    if (!String(form.encodingKafka || "").trim()) return "字符编码为必填项";
+    if (!String(form.logFilterEnabledKafka || "").trim()) return "日志筛选为必填项";
+    if (form.logFilterEnabledKafka === "on" && !String(form.logFilterRegexKafka || "").trim()) return "正则筛选为必填项";
+  }
+  return "";
+}
+function validateKafkaConnectivityForm(form) {
+  if (!String(form.brokers || "").trim()) return "Broker 地址为必填项";
+  if (!String(form.topic || "").trim()) return "Topic 为必填项";
+  if (!String(form.consumerGroup || "").trim()) return "消费组为必填项";
+  if (!String(form.startOffset || "").trim()) return "消费策略为必填项";
+  if (!String(form.securityProtocol || "").trim()) return "通信协议为必填项";
+  if (!String(form.encodingKafka || "").trim()) return "字符编码为必填项";
+  if (!String(form.logFilterEnabledKafka || "").trim()) return "日志筛选为必填项";
+  if (form.logFilterEnabledKafka === "on" && !String(form.logFilterRegexKafka || "").trim()) return "正则筛选为必填项";
   return "";
 }
 function isCollectSourcePayload(source) { const code = source.plugin_code || source.type; return code === "syslog" || code === "kafka"; }
@@ -891,12 +1560,11 @@ function inputFormToAPI(form) {
     log_filter_enabled: form.logFilterEnabled === "on",
     log_filter_regex: form.logFilterEnabled === "on" ? form.logFilterRegex : ""
   } : {
-    brokers: form.brokers,
+    brokers: splitCSV(form.brokers),
     topic: form.topic,
     consumer_group: form.consumerGroup,
-    transport_protocol: String(form.transportProtocolKafka || "TCP").toUpperCase(),
+    start_offset: form.startOffset || "earliest",
     security_protocol: form.securityProtocol,
-    consume_strategy: form.consumeStrategy,
     encoding: form.encodingKafka || "UTF-8",
     log_filter_enabled: form.logFilterEnabledKafka === "on",
     log_filter_regex: form.logFilterEnabledKafka === "on" ? form.logFilterRegexKafka : ""
@@ -907,7 +1575,7 @@ function apiSourceToInput(source) {
   const config = source.plugin_config || {};
   const pluginCode = source.plugin_code || source.type || "syslog";
   if (pluginCode === "kafka") {
-    return { ...defaultInputForm(), id: source.id, name: source.name, plugin: "Kafka", status: source.status, runtimeStatus: source.runtime_status || "", listenerStatus: source.listener_status || "", listenerEndpoint: source.listener_endpoint || "", internalRawTopic: source.internal_raw_topic || makeInputRoute(source.name), brokers: config.brokers || "", topic: config.topic || "", consumerGroup: config.consumer_group || "", transportProtocolKafka: config.transport_protocol || "TCP", securityProtocol: config.security_protocol || "PLAINTEXT", consumeStrategy: config.consume_strategy || "最早", encodingKafka: config.encoding || "UTF-8", logFilterEnabledKafka: config.log_filter_enabled ? "on" : "off", logFilterRegexKafka: config.log_filter_regex || "" };
+    return { ...defaultInputForm(), id: source.id, name: source.name, plugin: "Kafka", status: source.status, runtimeStatus: source.runtime_status || "", listenerStatus: source.listener_status || "", listenerEndpoint: source.listener_endpoint || "", internalRawTopic: source.internal_raw_topic || makeInputRoute(source.name), brokers: Array.isArray(config.brokers) ? config.brokers.join(",") : config.brokers || "", topic: config.topic || "", consumerGroup: config.consumer_group || "", securityProtocol: config.security_protocol || "PLAINTEXT", startOffset: config.start_offset || "earliest", encodingKafka: config.encoding || "UTF-8", logFilterEnabledKafka: config.log_filter_enabled ? "on" : "off", logFilterRegexKafka: config.log_filter_regex || "" };
   }
   return { ...defaultInputForm(), id: source.id, name: source.name, plugin: "Syslog", status: source.status, runtimeStatus: source.runtime_status || "", listenerStatus: source.listener_status || "", listenerEndpoint: source.listener_endpoint || "", internalRawTopic: source.internal_raw_topic || makeInputRoute(source.name), collectorPort: String(config.collector_port || parsePort(source.addr) || "5514"), transportProtocol: String(config.transport_protocol || source.protocol || "UDP").toUpperCase(), encoding: config.encoding || "UTF-8", logFilterEnabled: config.log_filter_enabled ? "on" : "off", logFilterRegex: config.log_filter_regex || "" };
 }
@@ -917,10 +1585,21 @@ function parsePortFromEndpoint(value) {
   return match ? match[1] : "";
 }
 function toNumber(value, fallback) { const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback; }
+function splitCSV(value) { return String(value || "").split(",").map((item) => item.trim()).filter(Boolean); }
 
 function makeInputRoute(name) { return `raw.ds_${String(name || "source").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "source"}`; }
 function applyDataSourceRoute() { const item = inputConfigs.value.find((input) => input.name === ruleForm.dataSourceName); ruleForm.inputRoute = item ? item.internalRawTopic : "internal_raw_topic"; }
-function selectParserPlugin(plugin) { ruleForm.plugin = plugin; syncPropsConf(); }
+function selectParserPlugin(plugin) {
+  ruleForm.pluginCode = plugin.plugin_code;
+  ruleForm.pluginVersion = plugin.plugin_version || "1.0.0";
+  ruleForm.plugin = parserPluginLabel(plugin.plugin_code);
+  syncPropsConf();
+}
+function parserPluginDisplayName(plugin) {
+  if (plugin.plugin_code === "regex") return "正则";
+  if (plugin.plugin_code === "json-parser") return "JSON";
+  return plugin.name || plugin.plugin_code;
+}
 async function previewParse() {
   const request = ruleFormToAPI(ruleForm);
   try {
@@ -928,10 +1607,10 @@ async function previewParse() {
     const response = await requestJSON(`/api/v1/parse-rules/${encodeURIComponent(id)}/test`, { auth: true, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
     previewRows.value = response.fields || [];
     return;
-	  } catch {
-	    const sample = ruleForm.sampleLog || "";
-	    previewRows.value = previewRegex(sample, ruleForm.regexPattern);
-	  }
+  } catch {
+    const sample = ruleForm.sampleLog || "";
+    previewRows.value = ruleForm.pluginCode === "json-parser" ? previewJson(sample) : previewRegex(sample, ruleForm.regexPattern);
+  }
 	}
 function syncPropsConf() {
   const nextGenerated = buildPropsConf(ruleForm);
@@ -1001,32 +1680,34 @@ function validateRuleForm(form) {
   if (!String(form.dataSourceName || "").trim()) return "关联采集数据源名称为必填项";
   if (!String(form.outputIndex || "").trim()) return "写入 index 为必填项";
   if (!Number(form.priority || 0)) return "优先级为必填项";
-  if (!String(form.plugin || "").trim()) return "解析方式为必填项";
+  if (!String(form.pluginCode || "").trim()) return "解析方式为必填项";
   if (!String(form.sampleLog || "").trim()) return "日志样例为必填项";
-  if (form.plugin === "正则解析插件" && !String(form.regexPattern || "").trim()) return "正则表达式为必填项";
+  if (form.pluginCode === "regex" && !String(form.regexPattern || "").trim()) return "正则表达式为必填项";
   if (!String(form.propsConf || "").trim()) return "最终 props.conf 配置项为必填项";
   return "";
 }
-	function buildPropsConf(data) {
-	  const sourceName = String(data.name || "custom").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom";
-	  return `[source::${sourceName}]\nEXTRACT-custom = ${(data.regexPattern || "field=(?<field>\\S+)").replace(/\?P</g, "?<")}`;
-	}
-function ruleFormToAPI(form) {
-  const plugin = parserPluginCode(form.plugin);
-  return { name: form.name, status: "active", parser_plugin: plugin, parser_plugin_version: "1.0.0", data_source_name: form.dataSourceName, input_route: form.inputRoute || "internal_raw_topic", output_index: form.outputIndex || "app", priority: Number(form.priority || 100), stage: "ingest", sample_event: form.sampleLog, plugin_config: pluginConfigFromRuleForm(form, plugin), props_conf: form.propsConf || buildPropsConf(form) };
+function buildPropsConf(data) {
+  const sourceName = String(data.name || "custom").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "custom";
+  if (data.pluginCode === "json-parser") return `[source::${sourceName}]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none`;
+  return `[source::${sourceName}]\nEXTRACT-custom = ${(data.regexPattern || "field=(?<field>\\S+)").replace(/\?P</g, "?<")}`;
 }
-	function pluginConfigFromRuleForm(form, plugin) {
-	  if (plugin === "regex") return { source_field: "raw", regex_pattern: form.regexPattern, target: "fields", field_types: {}, on_no_match: "continue" };
-	  return {};
-	}
+function ruleFormToAPI(form) {
+  const plugin = form.pluginCode || parserPluginCode(form.plugin);
+  return { name: form.name, status: "active", parser_plugin: plugin, parser_plugin_version: form.pluginVersion || "1.0.0", data_source_name: form.dataSourceName, input_route: form.inputRoute || "internal_raw_topic", output_index: form.outputIndex || "app", priority: Number(form.priority || 100), stage: "ingest", sample_event: form.sampleLog, plugin_config: pluginConfigFromRuleForm(form, plugin), props_conf: form.propsConf || buildPropsConf(form) };
+}
+function pluginConfigFromRuleForm(form, plugin) {
+  if (plugin === "regex") return { source_field: "raw", regex_pattern: form.regexPattern, target: "fields", field_types: {}, on_no_match: "continue" };
+  if (plugin === "json-parser") return { source_field: "raw", target: "fields", flatten_nested: true, flatten_separator: ".", array_mode: form.jsonArrayMode || "json_string", on_invalid_json: form.jsonInvalidPolicy || "continue" };
+  return {};
+}
 function apiRuleToForm(rule) {
   const config = rule.plugin_config || {};
   const plugin = parserPluginLabel(rule.parser_plugin);
-  return { ...defaultRuleForm(), id: rule.id, name: rule.name, plugin, dataSourceName: rule.data_source_name || "", inputRoute: rule.input_route || "internal_raw_topic", outputIndex: rule.output_index || "app", priority: Number(rule.priority || 100), sampleLog: rule.sample_event || "", regexPattern: config.regex_pattern || "", kvPairDelimiter: displayDelimiter(config.field_delimiter), kvDelimiter: config.kv_delimiter || "=", kvQuote: config.field_quote || '"', delimitedDelimiter: config.field_delimiter || ",", delimitedQuote: config.field_quote || '"', delimitedFields: Array.isArray(config.field_names) ? config.field_names.join(",") : (config.field_names || "field1,field2,field3"), propsConf: rule.props_conf || "" };
+  return { ...defaultRuleForm(), id: rule.id, name: rule.name, plugin, pluginCode: rule.parser_plugin || "regex", pluginVersion: rule.parser_plugin_version || "1.0.0", dataSourceName: rule.data_source_name || "", inputRoute: rule.input_route || "internal_raw_topic", outputIndex: rule.output_index || "app", priority: Number(rule.priority || 100), sampleLog: rule.sample_event || "", regexPattern: config.regex_pattern || "", jsonArrayMode: config.array_mode || "json_string", jsonInvalidPolicy: config.on_invalid_json || "continue", kvPairDelimiter: displayDelimiter(config.field_delimiter), kvDelimiter: config.kv_delimiter || "=", kvQuote: config.field_quote || '"', delimitedDelimiter: config.field_delimiter || ",", delimitedQuote: config.field_quote || '"', delimitedFields: Array.isArray(config.field_names) ? config.field_names.join(",") : (config.field_names || "field1,field2,field3"), propsConf: rule.props_conf || "" };
 }
 
-	function parserPluginCode(label) { return { "正则解析插件": "regex" }[label] || label; }
-	function parserPluginLabel(code) { return { regex: "正则解析插件" }[code] || code; }
+function parserPluginCode(label) { return { "正则解析插件": "regex", "JSON 解析插件": "json-parser" }[label] || label; }
+function parserPluginLabel(code) { return { regex: "正则解析插件", "json-parser": "JSON 解析插件" }[code] || code; }
 function normalizeFieldDelimiter(value) { return value === "空格" ? " " : (value || " "); }
 function displayDelimiter(value) { return value === " " ? "空格" : (value || "空格"); }
 function previewJson(sample) { try { return flattenJson(JSON.parse(sample)); } catch { return [{ field: "error", value: "JSON 样例无法解析", type: "error" }]; } }
@@ -1057,7 +1738,9 @@ async function saveIndex() {
     ttl_days: Number(indexForm.ttl),
     status: indexForm.status
   };
-  const saved = await requestJSON("/api/v1/indexes", { auth: true, method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+  const endpoint = editingIndexId.value ? `/api/v1/indexes/${encodeURIComponent(request.index_name)}` : "/api/v1/indexes";
+  const method = editingIndexId.value ? "PUT" : "POST";
+  const saved = await requestJSON(endpoint, { auth: true, method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
   const item = apiIndexToForm(saved);
   indexes.value = upsertIndexForm(indexes.value, item);
   await loadIndexConfig(true);
@@ -1099,12 +1782,97 @@ function resetIndexForm() {
 }
 function apiIndexToForm(index) {
   const name = index.index_name || index.name || "";
-  return { id: name || nextId("idx"), name, ttl: Number(index.ttl_days || index.ttl || 30), rows: Number(index.rows || 0), status: index.status || "active", system: Boolean(index.system), indexType: index.index_type || (String(name).startsWith("_") ? "system" : "business") };
+  return {
+    id: name || nextId("idx"),
+    name,
+    tableName: index.table_name || (name ? `events_${name}` : ""),
+    ttl: Number(index.ttl_days || index.ttl || 30),
+    physicalTtl: Number(index.physical_ttl_days || index.physicalTtl || 0),
+    rows: Number(index.rows || 0),
+    storageBytes: Number(index.storage_bytes || index.storageBytes || 0),
+    latestEventTime: index.latest_event_time || index.latestEventTime || "",
+    status: index.status || "active",
+    system: Boolean(index.system),
+    indexType: index.index_type || (String(name).startsWith("_") ? "system" : "business"),
+    trend: index.trend || null,
+    trendOpen: false,
+    trendLoading: false,
+    trendError: ""
+  };
 }
 function isSystemIndex(item) { return Boolean(item?.system || item?.indexType === "system" || String(item?.name || "").startsWith("_")); }
 function upsertIndexForm(items, item) {
   const exists = items.some((current) => current.name === item.name);
   return exists ? items.map((current) => current.name === item.name ? item : current) : [item, ...items];
+}
+async function loadIndexTrend(item) {
+  if (item.trendOpen) {
+    item.trendOpen = false;
+    return;
+  }
+  item.trendOpen = true;
+  item.trendLoading = true;
+  item.trendError = "";
+  try {
+    item.trend = normalizeIndexTrend(await requestJSON(`/api/v1/indexes/${encodeURIComponent(item.name)}/trend?days=7`, { auth: true }));
+  } catch (error) {
+    item.trendError = error.message || "容量趋势加载失败";
+  } finally {
+    item.trendLoading = false;
+  }
+}
+function indexTrendBarHeight(item, point) {
+  const rows = Number(point?.rows || 0);
+  const maxRows = Math.max(...(item.trend?.points || []).map((entry) => Number(entry.rows || 0)), 1);
+  return rows <= 0 ? 4 : Math.max(10, Math.round((rows / maxRows) * 100));
+}
+function indexTrendTicks(item) {
+  const points = Array.isArray(item?.trend?.points) ? item.trend.points : [];
+  if (!points.length) return [];
+  const labels = points.map((point, index) => ({ key: `${indexTrendPointLabel(point)}-${index}`, label: indexTrendPointLabel(point) }));
+  if (points.length <= 3) {
+    return labels;
+  }
+  const indexes = Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])).sort((a, b) => a - b);
+  return indexes.map((index) => labels[index]);
+}
+function indexTrendYTicks(item) {
+  const points = Array.isArray(item?.trend?.points) ? item.trend.points : [];
+  const maxRows = Math.max(...points.map((entry) => Number(entry.rows || 0)), 0);
+  const middle = Math.round(maxRows / 2);
+  return [
+    { key: "max", label: `${formatNumber(maxRows)} 条` },
+    { key: "middle", label: `${formatNumber(middle)} 条` },
+    { key: "zero", label: "0 条" }
+  ];
+}
+function indexTrendPointLabel(point) {
+  const raw = point?.captured_at || point?.capturedAt || point?.date || "";
+  const text = String(raw);
+  const date = new Date(text);
+  if (!Number.isNaN(date.getTime())) {
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hour = String(date.getHours()).padStart(2, "0");
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    return `${month}-${day} ${hour}:${minute}`;
+  }
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[2]}-${compact[3]}`;
+  const isoDate = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDate) return `${isoDate[2]}-${isoDate[3]}`;
+  return text || "-";
+}
+function normalizeIndexTrend(trend) {
+  return {
+    ...trend,
+    rows_growth_7d: Number(trend?.rows_growth_7d ?? trend?.rowsGrowth7d ?? 0),
+    storage_growth_bytes_7d: Number(trend?.storage_growth_bytes_7d ?? trend?.storageGrowthBytes7d ?? 0),
+    current_rows: Number(trend?.current_rows ?? trend?.currentRows ?? 0),
+    current_storage_bytes: Number(trend?.current_storage_bytes ?? trend?.currentStorageBytes ?? 0),
+    points: Array.isArray(trend?.points) ? trend.points : [],
+    snapshot_retention_days: Number(trend?.snapshot_retention_days ?? trend?.snapshotRetentionDays ?? 0)
+  };
 }
 async function runSearch({ resetPage = false } = {}) {
   if (!searchQuery.value.trim()) {
@@ -1124,7 +1892,7 @@ async function runSearch({ resetPage = false } = {}) {
       timelineBuckets.value = [];
       timelineStatus.value = `时间柱状图加载失败：${error.message}`;
     }
-    resultMode.value = response.mode === "stats" ? "stats" : "events";
+    resultMode.value = response.mode === "stats" ? "stats" : (response.mode === "table" ? "table" : "events");
     updateSearchPagination(response.pagination);
     if (resultMode.value === "stats") {
       statsFields.value = response.stats?.fields?.length ? response.stats.fields : inferFields(response.stats?.rows || []);
@@ -1132,6 +1900,14 @@ async function runSearch({ resetPage = false } = {}) {
       expandedEvents.value = new Set();
       searchTimeRangeText.value = formatResponseTimeRange(response.time_range);
       resultStatus.value = `统计视图 · ${formatNumber(searchPagination.value.total || searchPagination.value.returned)} 组 · ${searchTimeRangeText.value || "未限定时间"} · ${response.elapsed_ms ?? 0}ms`;
+      return;
+    }
+    if (resultMode.value === "table") {
+      statsFields.value = response.table?.fields?.length ? response.table.fields : inferFields(response.table?.rows || []);
+      searchResults.value = response.table?.rows || [];
+      expandedEvents.value = new Set();
+      searchTimeRangeText.value = formatResponseTimeRange(response.time_range);
+      resultStatus.value = `表格视图 · ${formatNumber(searchPagination.value.total || searchPagination.value.returned)} 行 · ${searchTimeRangeText.value || "未限定时间"} · ${response.elapsed_ms ?? 0}ms`;
       return;
     }
     statsFields.value = [];
@@ -1314,7 +2090,8 @@ async function toggleSavedSearches() {
   savedOpen.value = !savedOpen.value;
   if (savedOpen.value) await loadSavedSearches();
 }
-async function loadSavedSearches() {
+async function loadSavedSearches(force = false) {
+  if (savedSearchesLoaded.value && !force) return;
   savedSearchError.value = "";
   try {
     const payload = await requestJSON("/api/v1/search/favorites", { auth: true });
@@ -1392,6 +2169,34 @@ function formatResponseTimeRange(range) {
   return `${startText} - ${endText}`;
 }
 function formatNumber(value) { return Number(value || 0).toLocaleString(); }
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const formatted = size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1).replace(/\.0$/, "");
+  return `${formatted} ${units[unitIndex]}`;
+}
+function formatWriterEPS(value) {
+  const eps = Number(value || 0);
+  if (!Number.isFinite(eps)) return "0";
+  if (eps >= 10) return eps.toFixed(1);
+  return eps.toFixed(2).replace(/\.00$/, "");
+}
+function formatPercent(value) {
+  const ratio = Number(value || 0);
+  if (!Number.isFinite(ratio)) return "0%";
+  return `${(ratio * 100).toFixed(ratio > 0 && ratio < 0.01 ? 2 : 1)}%`;
+}
+function formatIndexDateTime(value) {
+  const formatted = formatFullDateTime(value);
+  return formatted || "—";
+}
 function formatTimelineTick(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value || "").slice(0, 16);
@@ -1408,12 +2213,16 @@ function formatTimelineTick(value) {
 .expand-col{width:34px}.expand-toggle{border:0;background:transparent;color:var(--xdp-cyan);font:800 13px var(--xdp-mono);cursor:pointer}.event-detail-row:hover td{background:transparent}.event-detail{display:grid;gap:12px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.04)}.detail-raw{display:grid;gap:6px}.detail-raw span{color:var(--xdp-muted);font-size:12px;font-weight:800;text-transform:uppercase}.console-shell[data-theme="ops-console"] .expand-toggle{color:#087eab}.console-shell[data-theme="ops-console"] .event-detail{border-color:#d9e4ec;background:#f8fbfd}.console-shell[data-theme="ops-console"] .detail-raw span{color:var(--ops-muted)}
 .pagination-bar{display:flex;align-items:center;justify-content:flex-end;gap:16px;margin:0 -18px -18px;padding:18px 22px 20px;border-top:1px solid rgba(255,255,255,.1);border-radius:0 0 var(--xdp-radius) var(--xdp-radius);background:rgba(255,255,255,.035)}.pagination-controls{display:flex;align-items:center;justify-content:flex-end;gap:10px}.pager-arrow,.pager-page{display:grid;place-items:center;min-width:36px;height:36px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--xdp-ink);font-weight:800}.pager-arrow{font-size:24px}.pager-page{font-size:16px}.pager-ellipsis{display:grid;place-items:center;min-width:24px;height:36px;color:#7c8796;font-weight:800;letter-spacing:2px}.pager-arrow:not(:disabled):hover,.pager-page:hover{border-color:rgba(255,173,0,.45);background:rgba(255,173,0,.08);color:var(--xdp-orange)}.pager-page.active{border-color:var(--xdp-orange);background:rgba(255,173,0,.1);color:var(--xdp-orange);box-shadow:0 0 0 3px rgba(255,173,0,.08)}.pager-arrow:disabled{color:rgba(165,178,209,.45);cursor:not-allowed}.page-size-select .select{min-width:132px;height:40px;border-radius:8px;padding:0 14px}.console-shell[data-theme="ops-console"] .pagination-bar{border-top-color:#e5ebf1;background:#fff}.console-shell[data-theme="ops-console"] .pager-arrow,.console-shell[data-theme="ops-console"] .pager-page{color:#172638}.console-shell[data-theme="ops-console"] .pager-ellipsis{color:#8996a3}.console-shell[data-theme="ops-console"] .pager-arrow:not(:disabled):hover,.console-shell[data-theme="ops-console"] .pager-page:hover{border-color:rgba(255,122,26,.45);background:#fff5ec;color:#ff7a1a}.console-shell[data-theme="ops-console"] .pager-page.active{border-color:#ff7a1a;background:#fff;color:#ff7a1a;box-shadow:0 0 0 3px rgba(255,122,26,.08)}.console-shell[data-theme="ops-console"] .pager-arrow:disabled{color:#c3cbd2}.console-shell[data-theme="ops-console"] .page-size-select .select{border-color:#cfd9e3;background:#fff;color:#172638}@media (max-width:720px){.pagination-bar{align-items:flex-start;flex-direction:column}.pagination-controls{justify-content:flex-start;flex-wrap:wrap}}
 .parser-plugin-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.index-trend-row:hover td{background:transparent}.index-trend-panel{display:grid;gap:12px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.04)}.index-trend-summary{display:flex;flex-wrap:wrap;gap:10px;color:var(--xdp-muted);font-size:12px;font-weight:800}.index-trend-summary span{border:1px solid rgba(85,223,255,.2);border-radius:999px;padding:5px 9px;background:rgba(85,223,255,.08)}.index-trend-chart{display:grid;gap:6px}.index-trend-plot{display:grid;grid-template-columns:70px minmax(0,1fr);gap:10px;align-items:stretch}.index-trend-y-axis{height:110px;display:flex;flex-direction:column;justify-content:space-between;padding:0 0 22px;text-align:right;color:var(--xdp-muted);font:800 11px var(--xdp-mono);white-space:nowrap}.index-trend-main{min-width:0;display:grid;grid-template-rows:88px 22px}.index-trend-bars{display:flex;align-items:end;gap:6px;border-left:1px solid rgba(255,255,255,.13);border-bottom:1px solid rgba(255,255,255,.16);padding:0 6px}.index-trend-bars span{flex:1;min-width:8px;border-radius:5px 5px 0 0;background:linear-gradient(180deg,var(--xdp-cyan),var(--xdp-green))}.index-trend-x-axis{display:flex;justify-content:space-between;gap:8px;padding:7px 0 0 6px;color:var(--xdp-muted);font:800 11px var(--xdp-mono);white-space:nowrap}.console-shell[data-theme="ops-console"] .index-trend-panel{border-color:#d9e4ec;background:#f8fbfd}.console-shell[data-theme="ops-console"] .index-trend-summary,.console-shell[data-theme="ops-console"] .index-trend-x-axis,.console-shell[data-theme="ops-console"] .index-trend-y-axis{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .index-trend-summary span{border-color:#b9e8e4;background:#e4f8f5}.console-shell[data-theme="ops-console"] .index-trend-bars{border-left-color:#d4e0e8;border-bottom-color:#c9d8e3}.console-shell[data-theme="ops-console"] .index-trend-bars span{background:linear-gradient(180deg,#2878b8,#13bfb4 70%,#28b76f)}
 .collect-runtime-row{cursor:pointer}.collect-runtime-row.selected td{background:rgba(85,223,255,.08)}.collect-runtime-row.abnormal td{box-shadow:inset 3px 0 0 var(--xdp-danger)}.status-pill{display:inline-flex;align-items:center;width:max-content;border:1px solid rgba(85,223,255,.24);border-radius:999px;padding:4px 9px;font-size:12px;font-weight:800;color:#dffaff;background:rgba(85,223,255,.12)}.status-pill.runtime-running{border-color:rgba(103,242,138,.34);color:#dfffe9;background:rgba(103,242,138,.12)}.status-pill.runtime-stopped{border-color:rgba(165,178,209,.28);color:#d8e0f5;background:rgba(165,178,209,.1)}.status-pill.runtime-error{border-color:rgba(255,95,97,.34);color:#ffd4d2;background:rgba(255,95,97,.12)}.runtime-detail-card{margin-top:14px;border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:14px;background:rgba(255,255,255,.045)}.runtime-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.runtime-detail-head div{display:grid;gap:4px}.runtime-detail-head strong{color:#fff;font-size:16px}.runtime-detail-head span:not(.status-pill){color:var(--xdp-muted);font-size:12px}.runtime-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.runtime-detail-grid>div{display:grid;gap:6px;border:1px solid rgba(255,255,255,.09);border-radius:14px;padding:12px;background:rgba(1,4,22,.22)}.runtime-detail-grid span{color:var(--xdp-muted);font-size:12px;font-weight:800}.runtime-detail-grid strong{color:#fff;word-break:break-all}.runtime-detail-grid small{color:var(--xdp-muted);word-break:break-all}.runtime-detail-grid .topology{grid-column:1/-1}
 .console-shell[data-theme="ops-console"] .collect-runtime-row.selected td{background:#e9fbf8}.console-shell[data-theme="ops-console"] .collect-runtime-row.abnormal td{box-shadow:inset 3px 0 0 #dc5b4b}.console-shell[data-theme="ops-console"] .status-pill.runtime-running{border-color:#b8ead5;color:#0f7a50;background:#e6f8ef}.console-shell[data-theme="ops-console"] .status-pill.runtime-stopped{border-color:#d6e1e9;color:#526174;background:#f4f7fb}.console-shell[data-theme="ops-console"] .status-pill.runtime-error{border-color:#f0c4bd;color:#b43f32;background:#fff1ef}.console-shell[data-theme="ops-console"] .runtime-detail-card{border-color:#d9e4ec;background:#f8fbfd}.console-shell[data-theme="ops-console"] .runtime-detail-head strong,.console-shell[data-theme="ops-console"] .runtime-detail-grid strong{color:#1f2d3d}.console-shell[data-theme="ops-console"] .runtime-detail-head span:not(.status-pill),.console-shell[data-theme="ops-console"] .runtime-detail-grid span,.console-shell[data-theme="ops-console"] .runtime-detail-grid small{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .runtime-detail-grid>div{border-color:#d9e4ec;background:#fff}
 @media (max-width:720px){.parser-plugin-grid{grid-template-columns:1fr}}
 @media (max-width:720px){.runtime-detail-grid{grid-template-columns:1fr}}
 .panel-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-left:auto}
 .plugin-type-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}.plugin-type-tabs button{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:14px;color:#dce5fb;background:rgba(255,255,255,.055);font-weight:800}.plugin-type-tabs button.active{border-color:rgba(85,223,255,.78);color:#fff;background:rgba(85,223,255,.12);box-shadow:0 0 30px rgba(85,223,255,.1)}.plugin-type-tabs small{display:grid;place-items:center;min-width:28px;height:24px;border-radius:999px;background:rgba(85,223,255,.14);color:inherit}.plugin-upload-panel{display:grid;grid-template-columns:minmax(260px,1fr) auto minmax(180px,auto);align-items:end;gap:12px}.console-shell[data-theme="ops-console"] .page-icon-plugins{background:linear-gradient(135deg,#13bfb4,#4f86d9)}.console-shell[data-theme="ops-console"] .plugin-type-tabs button{border-color:#d6e1e9;color:#243447;background:#fff}.console-shell[data-theme="ops-console"] .plugin-type-tabs button.active{border-color:var(--ops-primary);color:#0d4d4b;background:#e8fbf8;box-shadow:0 10px 28px rgba(19,191,180,.16)}.console-shell[data-theme="ops-console"] .plugin-type-tabs small{background:#dff7f4;color:#08776f}
+.plugin-card:disabled,.plugin-card.locked{cursor:not-allowed;opacity:.7;box-shadow:none}.plugin-file-field{display:grid;gap:8px;color:#344558;font-size:13px;font-weight:700}.plugin-file-control{position:relative;display:flex;align-items:center;min-height:44px;overflow:hidden;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(1,4,22,.52)}.plugin-file-input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}.plugin-file-button{display:grid;place-items:center;align-self:stretch;min-width:116px;padding:0 16px;border-right:1px solid rgba(255,255,255,.12);color:#dffaff;background:rgba(85,223,255,.12);font-weight:800}.plugin-file-name{min-width:0;overflow:hidden;padding:0 14px;color:var(--xdp-muted);text-overflow:ellipsis;white-space:nowrap}.plugin-action{min-height:32px;border:1px solid transparent;border-radius:9px;padding:0 12px;font-weight:800;transition:transform .15s ease,box-shadow .15s ease,background .15s ease}.plugin-action:hover{transform:translateY(-1px)}.plugin-action:focus-visible{outline:3px solid rgba(85,223,255,.2);outline-offset:2px}.plugin-action-detail{border-color:rgba(85,223,255,.34);color:#dffaff;background:rgba(85,223,255,.1)}.plugin-action-enable{border-color:rgba(103,242,138,.34);color:#dfffe9;background:rgba(103,242,138,.12)}.plugin-action-disable{border-color:rgba(255,173,0,.34);color:#ffe2a6;background:rgba(255,173,0,.1)}.plugin-action-delete{border-color:rgba(255,95,97,.34);color:#ffd4d2;background:rgba(255,95,97,.1)}.console-shell[data-theme="ops-console"] .plugin-file-control{border-color:#cfd9e3;background:#fff}.console-shell[data-theme="ops-console"] .plugin-file-button{border-right-color:#cfd9e3;color:#08776f;background:#e8fbf8}.console-shell[data-theme="ops-console"] .plugin-file-name{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .plugin-action-detail{border-color:#9ddbd5;color:#08776f;background:#eefbf9}.console-shell[data-theme="ops-console"] .plugin-action-enable{border-color:#aee1c9;color:#0f7a50;background:#e6f8ef}.console-shell[data-theme="ops-console"] .plugin-action-disable{border-color:#f1cc99;color:#a85a05;background:#fff7e8}.console-shell[data-theme="ops-console"] .plugin-action-delete{border-color:#efb6ad;color:#b43f32;background:#fff1ef}.plugin-detail-inline-row:hover td{background:transparent}.plugin-detail-inline-row>td{padding:14px 10px 18px;background:rgba(85,223,255,.035)}.plugin-detail-inline{display:grid;gap:14px;border:1px solid rgba(85,223,255,.18);border-radius:18px;padding:16px;background:rgba(1,4,22,.22)}.plugin-detail-inline .card-head{margin-bottom:0}.plugin-version-table{border:1px solid rgba(255,255,255,.08);border-radius:14px}.console-shell[data-theme="ops-console"] .plugin-detail-inline-row>td{background:#f3fbfa}.console-shell[data-theme="ops-console"] .plugin-detail-inline{border-color:#cbe7e4;background:#fff}.console-shell[data-theme="ops-console"] .plugin-version-table{border-color:#d9e4ec}
 .config-drawer{position:fixed;z-index:40;top:104px;right:max(22px,calc((100vw - 1500px)/2 + 22px));width:min(560px,calc(100vw - 44px));max-height:calc(100vh - 132px);overflow:auto;animation:drawerSlideIn .18s ease-out}.config-drawer:before{content:"";position:fixed;inset:0;z-index:-1;background:rgba(12,22,32,.18);pointer-events:none}.content-grid{grid-template-columns:1fr}@keyframes drawerSlideIn{from{transform:translateX(28px);opacity:.72}to{transform:translateX(0);opacity:1}}@media (max-width:720px){.config-drawer{top:0;right:0;bottom:0;width:100vw;max-height:none;border-radius:0;overflow:auto}}
 .content-grid.list-first{grid-template-columns:1fr}
+.writer-runtime-card{display:grid;gap:14px}.writer-runtime-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.writer-runtime-grid>div{display:grid;gap:5px;border:1px solid rgba(255,255,255,.09);border-radius:15px;padding:12px;background:rgba(1,4,22,.22)}.writer-runtime-grid span{color:var(--xdp-muted);font-size:12px;font-weight:800}.writer-runtime-grid strong{color:#fff;font-size:16px;word-break:break-all}.writer-runtime-grid small{color:var(--xdp-muted);font-size:12px;word-break:break-all}.console-shell[data-theme="ops-console"] .writer-runtime-grid>div{border-color:#d9e4ec;background:#fff}.console-shell[data-theme="ops-console"] .writer-runtime-grid span,.console-shell[data-theme="ops-console"] .writer-runtime-grid small{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .writer-runtime-grid strong{color:#1f2d3d}@media (max-width:1100px){.writer-runtime-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:720px){.writer-runtime-grid{grid-template-columns:1fr}}
+.catalog-load-error{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:-4px 0 18px;border:1px solid rgba(255,95,97,.35);border-radius:14px;padding:10px 12px;color:#ffcbc6;background:rgba(255,95,97,.1)}.catalog-load-error .btn{min-height:34px;padding:0 13px;box-shadow:none}.catalog-load-error .btn:disabled{cursor:not-allowed;opacity:.55}.console-shell[data-theme="ops-console"] .catalog-load-error{border-color:#efc1b9;color:#a63b2f;background:#fff3f1}.console-shell[data-theme="ops-console"] .catalog-load-error .btn.ghost{border-color:#e5b7af;color:#a63b2f;background:#fff}
 </style>

@@ -6,11 +6,20 @@ printf '== health ==\n'
 curl -fsS "$BASE/healthz"
 
 printf '\n\n== productized plugins ==\n'
-curl -fsS "$BASE/api/v1/plugins" | python3 -m json.tool >/tmp/xdp_plugins.json
+curl -fsS "$BASE/api/v1/plugins?plugin_type=input&page_size=100" | python3 -m json.tool >/tmp/xdp_plugins_input.json
+curl -fsS "$BASE/api/v1/plugins?plugin_type=parser&page_size=100" | python3 -m json.tool >/tmp/xdp_plugins_parser.json
+curl -fsS "$BASE/api/v1/plugins?plugin_type=search_command&page_size=100" | python3 -m json.tool >/tmp/xdp_plugins_search_command.json
 python3 - <<'PY'
 import json
-items = json.load(open('/tmp/xdp_plugins.json'))
-codes = {i.get('plugin_code') or i.get('code') for i in items.get('plugins', items)}
+items = []
+for path in [
+    '/tmp/xdp_plugins_input.json',
+    '/tmp/xdp_plugins_parser.json',
+    '/tmp/xdp_plugins_search_command.json',
+]:
+    body = json.load(open(path))
+    items.extend(body.get('plugins', body if isinstance(body, list) else []))
+codes = {i.get('plugin_code') or i.get('code') for i in items}
 required = {'syslog', 'regex', 'stats'}
 forbidden = {'http-input', 'json-parser'}
 missing = required - codes

@@ -198,6 +198,53 @@ func TestExecuteParseRuleGroupMarksUnparsedWhenNoRuleMatches(t *testing.T) {
 	}
 }
 
+func TestExecuteParseRuleGroupPreservesParseFailureAndStopsFallback(t *testing.T) {
+	reg := plugin.NewRegistry()
+	mustRegister(t, reg.Register(testFailingParserMeta(), func() any { return &testFailingParser{} }))
+	mustRegister(t, reg.Register(testSelectiveParserMeta(), func() any { return &testSelectiveParser{} }))
+	mustRegister(t, reg.Register(testOutputMeta(), func() any { return &capturingOutput{} }))
+
+	ev := event.New(`{"service":`, event.Source{Type: "syslog"}, time.Now().UTC())
+	pipe := testPipeline(pipeline.StageSpec{
+		ID:      "parse-rules",
+		Type:    "parser_group",
+		OnError: &pipeline.ErrorPolicy{Action: "continue"},
+		Stages: []pipeline.StageSpec{
+			{
+				ID:      "parse-rule-broken-json",
+				Type:    string(plugin.TypeParser),
+				Plugin:  "test-failing-parser",
+				Version: "1.0.0",
+				Config:  map[string]any{"output_index": "json_app"},
+			},
+			parseRuleTestStage("parse-rule-catchall", "{", "catchall-rule", "audit_catchall"),
+		},
+	})
+
+	result, err := NewExecutor(reg).Execute(context.Background(), pipe, ev)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Status != "processed_with_errors" {
+		t.Fatalf("status = %q, want processed_with_errors", result.Status)
+	}
+	if got := result.Event.Metadata["parse_status"]; got != "parse_failed" {
+		t.Fatalf("parse_status = %#v, want parse_failed", got)
+	}
+	if got := result.Event.Metadata["parse_error"]; got == "" {
+		t.Fatalf("parse_error = %#v, want non-empty", got)
+	}
+	if got := result.Event.Metadata["index"]; got != "json_app" {
+		t.Fatalf("metadata.index = %#v, want json_app for failed matched parser", got)
+	}
+	if _, exists := result.Event.Fields["matched_pattern"]; exists {
+		t.Fatalf("fallback parser ran after parse failure: %#v", result.Event.Fields)
+	}
+	if len(result.Event.Errors) != 1 || result.Event.Errors[0].ErrorCode != string(plugin.ErrParseFailed) {
+		t.Fatalf("errors = %#v, want one PARSE_FAILED error", result.Event.Errors)
+	}
+}
+
 func TestExecuteReturnsFailedOnInvalidWhenExpression(t *testing.T) {
 	reg := plugin.NewRegistry()
 	mustRegister(t, reg.Register(testProcessorMeta(), func() any { return testProcessor{} }))
@@ -298,7 +345,7 @@ func (p *testSelectiveParser) Init(ctx plugin.InitContext, config map[string]any
 }
 func (p *testSelectiveParser) Process(ctx plugin.ProcessContext, ev *event.Event) (*event.Event, error) {
 	if !strings.Contains(ev.Raw, p.pattern) {
-		return ev, plugin.NewError(plugin.ErrParseFailed, "rule did not match", false, nil)
+		return ev, plugin.NewError(plugin.ErrNoMatch, "rule did not match", false, nil)
 	}
 	ev.Metadata["parse_status"] = "parsed"
 	ev.Metadata["parse_rule_id"] = p.ruleID
@@ -309,6 +356,26 @@ func (p *testSelectiveParser) Process(ctx plugin.ProcessContext, ev *event.Event
 	return ev, nil
 }
 func (p *testSelectiveParser) Close() error { return nil }
+
+func testFailingParserMeta() plugin.Metadata {
+	return plugin.Metadata{Code: "test-failing-parser", Name: "Test Failing Parser", Type: plugin.TypeParser, Version: "1.0.0", Runtime: "go"}
+}
+
+type testFailingParser struct{}
+
+func (p *testFailingParser) Metadata() plugin.Metadata { return testFailingParserMeta() }
+func (p *testFailingParser) Validate(config map[string]any) error {
+	return nil
+}
+func (p *testFailingParser) Init(ctx plugin.InitContext, config map[string]any) error {
+	return nil
+}
+func (p *testFailingParser) Process(ctx plugin.ProcessContext, ev *event.Event) (*event.Event, error) {
+	ev.Metadata["parse_status"] = "parse_failed"
+	ev.Metadata["parse_error"] = "invalid structured event"
+	return ev, plugin.NewError(plugin.ErrParseFailed, "invalid structured event", false, nil)
+}
+func (p *testFailingParser) Close() error { return nil }
 
 type capturingOutput struct {
 	writes int

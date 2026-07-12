@@ -30,10 +30,14 @@ func TestStatsPluginExecutesAgainstSearchBackend(t *testing.T) {
 	}
 	backend := &testBackend{}
 	input := plugin.SearchInput{
-		Index:     "audit",
-		Keyword:   "deny",
-		Field:     "action",
-		Value:     "deny",
+		Index:   "audit",
+		Keyword: "deny",
+		Field:   "action",
+		Value:   "deny",
+		FieldFilters: []plugin.SearchFieldFilter{
+			{Field: "action", Value: "deny"},
+			{Field: "parse_status", Value: "parsed"},
+		},
 		StartTime: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
 		EndTime:   time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC),
 		Limit:     1000,
@@ -52,6 +56,9 @@ func TestStatsPluginExecutesAgainstSearchBackend(t *testing.T) {
 	}
 	if backend.got.Index != "audit" || backend.got.Keyword != "deny" || backend.got.Field != "action" || backend.got.Stats.Raw != query.Raw {
 		t.Fatalf("backend query = %#v", backend.got)
+	}
+	if len(backend.got.FieldFilters) != 2 || backend.got.FieldFilters[1].Field != "parse_status" {
+		t.Fatalf("backend field filters = %#v", backend.got.FieldFilters)
 	}
 }
 

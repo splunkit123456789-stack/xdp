@@ -20,42 +20,50 @@ type Output struct {
 }
 
 type SearchQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
 }
 
 type StatsQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Limit     int
-	Offset    int
-	Stats     splstats.Query
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
+	Stats        splstats.Query
 }
 
 type TimelineQuery struct {
-	Index     string
-	Keyword   string
-	Field     string
-	Value     string
-	StartTime time.Time
-	EndTime   time.Time
-	Interval  string
-	Location  *time.Location
+	Index        string
+	Keyword      string
+	Field        string
+	Value        string
+	FieldFilters []FieldFilter
+	StartTime    time.Time
+	EndTime      time.Time
+	Interval     string
+	Location     *time.Location
 }
 
 type TimelineBucket struct {
 	Start time.Time
 	Count int
+}
+
+type FieldFilter struct {
+	Field string
+	Value string
 }
 
 type IndexInfo struct {
@@ -174,7 +182,7 @@ func (s *Store) Search(query SearchQuery) []*event.Event {
 		offset = 0
 	}
 	for _, e := range s.events {
-		if matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime) {
+		if matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime) {
 			matched = append(matched, e)
 		}
 	}
@@ -199,7 +207,7 @@ func (s *Store) Count(query SearchQuery) int {
 	defer s.mu.RUnlock()
 	total := 0
 	for _, e := range s.events {
-		if matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime) {
+		if matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime) {
 			total++
 		}
 	}
@@ -215,7 +223,7 @@ func (s *Store) Timeline(query TimelineQuery) []TimelineBucket {
 	}
 	counts := map[time.Time]int{}
 	for _, e := range s.events {
-		if matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime) {
+		if matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime) {
 			counts[memoryTimelineBucketStart(e.EventTime, query.Interval, location)]++
 		}
 	}
@@ -294,7 +302,7 @@ func (s *Store) Stats(query StatsQuery) splstats.Result {
 	groups := map[string]*memoryStatsGroup{}
 	order := []string{}
 	for _, e := range s.events {
-		if !matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.StartTime, query.EndTime) {
+		if !matchesQuery(e, query.Index, query.Keyword, query.Field, query.Value, query.FieldFilters, query.StartTime, query.EndTime) {
 			continue
 		}
 		keyParts := make([]string, 0, len(query.Stats.GroupBy))
@@ -346,7 +354,7 @@ func (s *Store) Stats(query StatsQuery) splstats.Result {
 	return splstats.Result{Query: query.Stats.Raw, Fields: fields, Rows: rows, Limit: limit}
 }
 
-func matchesQuery(e *event.Event, index string, keyword string, field string, value string, startTime time.Time, endTime time.Time) bool {
+func matchesQuery(e *event.Event, index string, keyword string, field string, value string, fieldFilters []FieldFilter, startTime time.Time, endTime time.Time) bool {
 	if !startTime.IsZero() && e.EventTime.Before(startTime) {
 		return false
 	}
@@ -359,13 +367,23 @@ func matchesQuery(e *event.Event, index string, keyword string, field string, va
 	if keyword != "" && !strings.Contains(strings.ToLower(e.Raw), strings.ToLower(keyword)) {
 		return false
 	}
-	if field != "" {
-		v, ok := fieldValue(e, splstats.FieldRef{Name: field})
-		if !ok || stringify(v) != value {
+	for _, filter := range normalizedFieldFilters(field, value, fieldFilters) {
+		v, ok := fieldValue(e, splstats.FieldRef{Name: filter.Field})
+		if !ok || stringify(v) != filter.Value {
 			return false
 		}
 	}
 	return true
+}
+
+func normalizedFieldFilters(field, value string, filters []FieldFilter) []FieldFilter {
+	if len(filters) > 0 {
+		return filters
+	}
+	if strings.TrimSpace(field) == "" {
+		return nil
+	}
+	return []FieldFilter{{Field: field, Value: value}}
 }
 
 type memoryStatsGroup struct {

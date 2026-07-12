@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,15 +60,49 @@ func (b *Bus) Consume(ctx context.Context, topic string, max int) ([]Message, er
 }
 
 type Kafka struct {
-	brokers []string
-	groupID string
-	mu      sync.Mutex
-	readers map[string]*kg.Reader
+	brokers     []string
+	groupID     string
+	startOffset int64
+	mu          sync.Mutex
+	readers     map[string]*kg.Reader
 }
 
-func NewKafka(brokers []string, groupID string) *Kafka {
-	return &Kafka{brokers: brokers, groupID: groupID, readers: map[string]*kg.Reader{}}
+type Option func(*Kafka)
+
+func WithStartOffset(offset string) Option {
+	return func(k *Kafka) {
+		switch strings.ToLower(strings.TrimSpace(offset)) {
+		case "latest":
+			k.startOffset = kg.LastOffset
+		default:
+			k.startOffset = kg.FirstOffset
+		}
+	}
 }
+
+func NewKafka(brokers []string, groupID string, opts ...Option) *Kafka {
+	k := &Kafka{brokers: brokers, groupID: groupID, startOffset: kg.FirstOffset, readers: map[string]*kg.Reader{}}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(k)
+		}
+	}
+	return k
+}
+
+func (k *Kafka) Close() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var closeErr error
+	for topic, reader := range k.readers {
+		if err := reader.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		delete(k.readers, topic)
+	}
+	return closeErr
+}
+
 func (k *Kafka) Produce(ctx context.Context, msg Message) error {
 	w := &kg.Writer{Addr: kg.TCP(k.brokers...), Topic: msg.Topic, Balancer: &kg.Hash{}}
 	defer w.Close()
@@ -97,7 +132,7 @@ func (k *Kafka) Consume(ctx context.Context, topic string, max int) ([]Message, 
 		max = 1
 	}
 	for len(out) < max {
-		fetchCtx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+		fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		m, err := r.FetchMessage(fetchCtx)
 		cancel()
 		if err != nil {
@@ -128,7 +163,7 @@ func (k *Kafka) reader(topic string) *kg.Reader {
 		MinBytes:               1,
 		MaxBytes:               10e6,
 		MaxWait:                500 * time.Millisecond,
-		StartOffset:            kg.FirstOffset,
+		StartOffset:            k.startOffset,
 		WatchPartitionChanges:  true,
 		PartitionWatchInterval: time.Second,
 	})

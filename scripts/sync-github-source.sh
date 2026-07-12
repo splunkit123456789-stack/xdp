@@ -14,6 +14,16 @@ mkdir -p "$TARGET_DIR"
 
 rsync -a --delete \
   --include='/README.md' \
+  --include='/build/' \
+  --include='/build/plugin-packages/' \
+  --include='/build/plugin-packages/kafka-input-sample.zip' \
+  --include='/build/plugin-packages/json-parser-sample.zip' \
+  --include='/build/plugin-packages/json-parser-sample-1.1.0.zip' \
+  --include='/build/plugin-packages/table-search-command-sample.zip' \
+  --include='/build/plugin-packages/sort-search-command-sample.zip' \
+  --include='/build/plugin-packages/head-search-command-sample.zip' \
+  --include='/build/plugin-packages/dedup-search-command-sample.zip' \
+  --exclude='/build/**' \
   --exclude='*.md' \
   --exclude='/.git/' \
   --exclude='/.cache/' \
@@ -22,7 +32,6 @@ rsync -a --delete \
   --exclude='/.code-review-graph/' \
   --exclude='/.claude/' \
   --exclude='/.gitee/' \
-  --exclude='/build/' \
   --exclude='/data/' \
   --exclude='/docs/' \
   --exclude='/github/' \
@@ -48,7 +57,7 @@ artifact_matches="$(
     -path '*/.code-review-graph' -o \
     -path '*/.claude' -o \
     -path '*/.gitee' -o \
-    -path '*/build' -o \
+    -path '*/build/docker-bin' -o \
     -path '*/data' -o \
     -path '*/node_modules' -o \
     -path '*/dist' -o \

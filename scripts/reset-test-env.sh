@@ -60,6 +60,7 @@ reset_mysql() {
     data_sources
     parse_rules
     saved_searches
+    search_command_execution_audits
     indexes
     parser_plugins
     pipeline_versions

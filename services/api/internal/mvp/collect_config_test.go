@@ -14,6 +14,24 @@ import (
 	mysqlstore "xdp/pkg/storage/mysql"
 )
 
+func inputPluginListContains(t *testing.T, body []byte, code string) bool {
+	t.Helper()
+	var response struct {
+		Plugins []struct {
+			Code string `json:"code"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode input plugins: %v, body = %s", err, string(body))
+	}
+	for _, plugin := range response.Plugins {
+		if plugin.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCollectConfigAPIManagesSyslogDataSources(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "false")
@@ -41,7 +59,6 @@ func TestCollectConfigAPIManagesSyslogDataSources(t *testing.T) {
 		t.Fatalf("decode input plugins: %v", err)
 	}
 	seenSyslog := false
-	seenKafka := false
 	for _, plugin := range pluginResponse.Plugins {
 		if plugin.Code == "syslog" {
 			seenSyslog = true
@@ -54,14 +71,11 @@ func TestCollectConfigAPIManagesSyslogDataSources(t *testing.T) {
 			}
 		}
 		if plugin.Code == "kafka" {
-			seenKafka = true
-			if plugin.Status != "disabled" || plugin.RuntimeCapabilities["runtime_ingest"] != false {
-				t.Fatalf("kafka plugin = %#v", plugin)
-			}
+			t.Fatalf("kafka must not be returned as a default input plugin before Web import: %#v", plugin)
 		}
 	}
-	if !seenSyslog || !seenKafka {
-		t.Fatalf("plugins = %#v, want syslog and kafka", pluginResponse.Plugins)
+	if !seenSyslog {
+		t.Fatalf("plugins = %#v, want syslog", pluginResponse.Plugins)
 	}
 
 	port := freeUDPPort(t)
@@ -254,6 +268,70 @@ func TestCollectConfigAPIManagesSyslogDataSources(t *testing.T) {
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assertErrorResponse(t, rec, http.StatusNotFound, "NOT_FOUND")
+}
+
+func TestCollectConfigUpdateRejectsPluginTypeChanges(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	createBody := `{"name":"Immutable Syslog","plugin_code":"syslog","status":"disabled","plugin_config":{"collector_port":5514,"transport_protocol":"UDP","encoding":"UTF-8","log_filter_enabled":false}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create datasource status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var created DataSource
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode datasource: %v", err)
+	}
+
+	importPluginForTest(t, handler, `{
+		"plugin_code": "kafka",
+		"plugin_type": "input",
+		"plugin_version": "1.0.0",
+		"name": "Kafka Input",
+		"runtime": "go_builtin",
+		"config_schema": {
+			"type":"object",
+			"properties":{
+				"brokers":{"type":"array","items":{"type":"string"}},
+				"topic":{"type":"string"},
+				"consumer_group":{"type":"string"}
+			},
+			"required":["brokers","topic","consumer_group"]
+		},
+		"ui_schema": {}
+	}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plugins/kafka/enable?plugin_type=input", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable kafka status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	updateBody := `{"name":"Immutable Syslog","plugin_code":"kafka","status":"disabled","plugin_config":{"brokers":["127.0.0.1:9092"],"topic":"xdp-events","consumer_group":"xdp-console"}}`
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/datasources/"+created.ID, strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assertErrorResponse(t, rec, http.StatusConflict, "PLUGIN_TYPE_IMMUTABLE")
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/datasources/"+created.ID, nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get datasource status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var persisted DataSource
+	if err := json.NewDecoder(rec.Body).Decode(&persisted); err != nil {
+		t.Fatalf("decode persisted datasource: %v", err)
+	}
+	if persisted.PluginCode != "syslog" {
+		t.Fatalf("persisted plugin_code = %q, want syslog", persisted.PluginCode)
+	}
 }
 
 func TestRuntimeTopologyFromRulesUsesBoundParseRule(t *testing.T) {
@@ -462,6 +540,63 @@ func TestCollectConfigPortCheckAcceptsAvailableUDPPort(t *testing.T) {
 	}
 }
 
+func TestCollectConfigConnectivityCheckAcceptsKafkaConfig(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_KAFKA_CONNECTIVITY_SKIP_NETWORK", "true")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	importPluginForTest(t, handler, `{
+		"plugin_code": "kafka",
+		"plugin_type": "input",
+		"plugin_version": "1.0.0",
+		"name": "Kafka Input",
+		"runtime": "external",
+		"status": "enabled",
+		"config_schema": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled"],
+			"properties": {
+				"brokers": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+				"topic": {"type": "string", "minLength": 1},
+				"consumer_group": {"type": "string", "minLength": 1},
+				"start_offset": {"type": "string", "enum": ["earliest", "latest"]},
+				"security_protocol": {"type": "string", "enum": ["PLAINTEXT"]},
+				"encoding": {"type": "string", "enum": ["UTF-8"]},
+				"log_filter_enabled": {"type": "boolean"}
+			}
+		}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/kafka/enable?plugin_type=input", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable kafka plugin status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := `{"plugin_code":"kafka","plugin_config":{"brokers":["127.0.0.1:9092"],"topic":"xdp-events","consumer_group":"xdp-console","start_offset":"earliest","security_protocol":"PLAINTEXT","encoding":"UTF-8","log_filter_enabled":false}}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/datasources/connectivity-check", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connectivity check status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Available  bool   `json:"available"`
+		PluginCode string `json:"plugin_code"`
+		Message    string `json:"message"`
+		Endpoint   string `json:"endpoint"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode connectivity response: %v", err)
+	}
+	if !response.Available || response.PluginCode != "kafka" || response.Endpoint != "kafka://127.0.0.1:9092/xdp-events" {
+		t.Fatalf("connectivity response = %#v", response)
+	}
+}
+
 func TestCollectConfigPortCheckUsesConfiguredAgent(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "false")
@@ -518,6 +653,144 @@ func TestCollectConfigCreateRejectsOccupiedUDPPort(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assertErrorResponse(t, rec, http.StatusConflict, "LISTENER_PORT_UNAVAILABLE")
+}
+
+func TestCollectConfigSavesEnabledKafkaPluginConfigWithRuntime(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	importPluginForTest(t, handler, `{
+		"plugin_code": "kafka",
+		"plugin_type": "input",
+		"plugin_version": "1.0.0",
+		"name": "Kafka Input",
+		"runtime": "external",
+		"config_schema": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled"],
+			"properties": {
+				"brokers": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+				"topic": {"type": "string", "minLength": 1},
+				"consumer_group": {"type": "string", "minLength": 1},
+				"start_offset": {"type": "string", "enum": ["earliest", "latest"]},
+				"security_protocol": {"type": "string", "enum": ["PLAINTEXT", "SASL_PLAINTEXT", "SASL_SSL", "SSL"]},
+				"encoding": {"type": "string", "enum": ["UTF-8", "GBK", "ISO-8859-1"]},
+				"log_filter_enabled": {"type": "boolean"},
+				"log_filter_regex": {"type": "string", "x-required-if": {"field": "log_filter_enabled", "equals": true}}
+			}
+		},
+		"ui_schema": {"order": ["brokers", "topic", "consumer_group", "start_offset", "security_protocol", "encoding", "log_filter_enabled", "log_filter_regex"]}
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/kafka/enable?plugin_type=input", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable kafka plugin status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := `{"name":"Kafka Stream P1","plugin_code":"kafka","status":"active","plugin_config":{"brokers":["10.0.0.1:9092","10.0.0.2:9092"],"topic":"xdp-events","consumer_group":"xdp-console","start_offset":"earliest","security_protocol":"PLAINTEXT","encoding":"UTF-8","log_filter_enabled":true,"log_filter_regex":"action=(allow|deny)"}}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save kafka datasource status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var source DataSource
+	if err := json.NewDecoder(rec.Body).Decode(&source); err != nil {
+		t.Fatalf("decode kafka datasource: %v", err)
+	}
+	if source.PluginCode != "kafka" || source.Type != "kafka" || source.PluginRuntime != "external" || source.PluginVersion != "1.0.0" {
+		t.Fatalf("saved kafka plugin contract = %#v", source)
+	}
+	if source.RuntimeStatus != "running" || source.ListenerStatus != "consuming" || source.ListenerEndpoint != "kafka://10.0.0.1:9092,10.0.0.2:9092/xdp-events" {
+		t.Fatalf("kafka runtime state = status=%q listener=%q endpoint=%q", source.RuntimeStatus, source.ListenerStatus, source.ListenerEndpoint)
+	}
+	if source.PluginConfig["topic"] != "xdp-events" || source.PluginConfig["log_filter_regex"] != "action=(allow|deny)" {
+		t.Fatalf("saved kafka plugin config = %#v", source.PluginConfig)
+	}
+	if brokers, ok := source.PluginConfig["brokers"].([]any); !ok || len(brokers) != 2 {
+		t.Fatalf("saved kafka brokers = %#v", source.PluginConfig["brokers"])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/datasources?plugin_code=kafka", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list kafka datasources status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		DataSources []DataSource `json:"datasources"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode kafka datasource list: %v", err)
+	}
+	if len(list.DataSources) != 1 || list.DataSources[0].ID != source.ID {
+		t.Fatalf("kafka datasource list = %#v, want %s", list.DataSources, source.ID)
+	}
+	if list.DataSources[0].RuntimeStatus != "running" || list.DataSources[0].ListenerStatus != "consuming" {
+		t.Fatalf("listed kafka runtime state = %#v", list.DataSources[0])
+	}
+}
+
+func TestInputPluginsExposeKafkaOnlyAfterImportAndEnable(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/input-plugins", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("input plugins status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if inputPluginListContains(t, rec.Body.Bytes(), "kafka") {
+		t.Fatalf("kafka input plugin must not be visible before Web import and enable: %s", rec.Body.String())
+	}
+	if !inputPluginListContains(t, rec.Body.Bytes(), "syslog") {
+		t.Fatalf("syslog built-in input plugin missing: %s", rec.Body.String())
+	}
+
+	importPluginForTest(t, handler, `{
+		"plugin_code": "kafka",
+		"plugin_type": "input",
+		"plugin_version": "1.0.0",
+		"name": "Kafka Input",
+		"runtime": "go_builtin",
+		"config_schema": {"type":"object","properties":{"brokers":{"type":"array","items":{"type":"string"}}}},
+		"ui_schema": {"order":["brokers"]}
+	}`)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/input-plugins", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("input plugins after import status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if inputPluginListContains(t, rec.Body.Bytes(), "kafka") {
+		t.Fatalf("disabled imported kafka input plugin must not be visible: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plugins/kafka/enable?plugin_type=input", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable kafka plugin status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/input-plugins", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("input plugins after enable status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !inputPluginListContains(t, rec.Body.Bytes(), "kafka") {
+		t.Fatalf("enabled imported kafka input plugin missing: %s", rec.Body.String())
+	}
 }
 
 func TestCollectConfigAPIValidatesSyslogRequests(t *testing.T) {
@@ -599,14 +872,8 @@ func TestCollectConfigAPIValidatesSyslogRequests(t *testing.T) {
 			wantCode:   "VALIDATION_ERROR",
 		},
 		{
-			name:       "kafka is not enabled in p0 runtime",
-			body:       `{"name":"Kafka Stream","plugin_code":"kafka","plugin_config":{"brokers":"10.0.0.1:9092","topic":"xdp-events","consumer_group":"xdp"}}`,
-			wantStatus: http.StatusUnprocessableEntity,
-			wantCode:   "PLUGIN_RUNTIME_DISABLED",
-		},
-		{
 			name:       "unknown input plugin is not supported",
-			body:       `{"name":"Unknown Stream","plugin_code":"file","plugin_config":{"path":"/tmp/app.log"}}`,
+			body:       `{"name":"Unknown Stream","plugin_code":"file","status":"active","plugin_config":{"path":"/tmp/app.log"}}`,
 			wantStatus: http.StatusUnprocessableEntity,
 			wantCode:   "PLUGIN_NOT_SUPPORTED",
 		},

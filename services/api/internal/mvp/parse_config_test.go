@@ -234,6 +234,225 @@ func TestParseConfigAPIManagesRulesAndPreview(t *testing.T) {
 	assertErrorResponse(t, rec, http.StatusNotFound, "PARSE_RULE_NOT_FOUND")
 }
 
+func TestParseConfigAcceptsEnabledImportedJSONParser(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	createTestSyslogDataSource(t, handler, "JSON Syslog")
+	importPluginForTest(t, handler, `{
+		"plugin_code": "json-parser",
+		"plugin_type": "parser",
+		"plugin_version": "1.0.0",
+		"name": "JSON Parser",
+		"runtime": "go_builtin",
+		"entrypoint": "builtin://plugins/parser/json",
+		"config_schema": {
+			"type": "object",
+			"required": ["source_field", "target", "array_mode", "on_invalid_json"],
+			"properties": {
+				"source_field": {"type":"string","enum":["raw"],"default":"raw"},
+				"target": {"type":"string","enum":["fields"],"default":"fields"},
+				"flatten_nested": {"type":"boolean","default":true},
+				"flatten_separator": {"type":"string","default":"."},
+				"array_mode": {"type":"string","enum":["json_string","expand_index"],"default":"json_string"},
+				"on_invalid_json": {"type":"string","enum":["continue","fail"],"default":"continue"}
+			}
+		},
+		"ui_schema": {"order":["array_mode","on_invalid_json"]}
+	}`)
+
+	body := `{"name":"JSON Rule","status":"active","parser_plugin":"json-parser","parser_plugin_version":"1.0.0","data_source_name":"JSON Syslog","input_route":"raw.ds_json_syslog","output_index":"json_app","priority":10,"stage":"ingest","sample_event":"{\"service\":\"checkout\",\"latency\":128,\"user\":{\"id\":\"u-1\"}}","plugin_config":{"source_field":"raw","target":"fields","flatten_nested":true,"flatten_separator":".","array_mode":"json_string","on_invalid_json":"continue"},"props_conf":"[source::json-rule]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none"}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/parse-rules", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assertErrorResponse(t, rec, http.StatusUnprocessableEntity, "PARSER_PLUGIN_NOT_ENABLED")
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plugins/json-parser/enable?plugin_type=parser", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable json parser status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/parse-rules/preview/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview json rule status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var preview struct {
+		Success bool           `json:"success"`
+		Fields  []PreviewField `json:"fields"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode json preview: %v", err)
+	}
+	if !preview.Success || !hasPreviewField(preview.Fields, "service", "checkout") || !hasPreviewField(preview.Fields, "user.id", "u-1") {
+		t.Fatalf("json preview = %#v", preview)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/parse-rules", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create json rule status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var created ParseRule
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode json rule: %v", err)
+	}
+	if created.ParserPlugin != "json-parser" || created.ParserPluginVersion != "1.0.0" {
+		t.Fatalf("created json rule = %#v", created)
+	}
+	if !hasParseRuleStage(handler.buildRuntimePipelines(), created.Code, "json-parser") {
+		t.Fatalf("runtime pipelines missing json-parser stage: %#v", handler.buildRuntimePipelines())
+	}
+}
+
+func TestParseConfigRejectsInvalidJSONParserConfig(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	createTestSyslogDataSource(t, handler, "JSON Syslog")
+	importPluginForTest(t, handler, `{
+		"plugin_code": "json-parser",
+		"plugin_type": "parser",
+		"plugin_version": "1.0.0",
+		"name": "JSON Parser",
+		"runtime": "go_builtin",
+		"entrypoint": "builtin://plugins/parser/json",
+		"config_schema": {
+			"type": "object",
+			"required": ["source_field", "target", "array_mode", "on_invalid_json"],
+			"properties": {
+				"source_field": {"type":"string","enum":["raw"],"default":"raw"},
+				"target": {"type":"string","enum":["fields"],"default":"fields"},
+				"array_mode": {"type":"string","enum":["json_string","expand_index"],"default":"json_string"},
+				"on_invalid_json": {"type":"string","enum":["continue","fail"],"default":"continue"}
+			}
+		},
+		"ui_schema": {"order":["array_mode","on_invalid_json"]}
+	}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/json-parser/enable?plugin_type=parser", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable json parser status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	body := `{"name":"JSON Rule","status":"active","parser_plugin":"json-parser","parser_plugin_version":"1.0.0","data_source_name":"JSON Syslog","input_route":"raw.ds_json_syslog","output_index":"json_app","priority":10,"stage":"ingest","sample_event":"{\"service\":\"checkout\"}","plugin_config":{"source_field":"raw","target":"fields","array_mode":"json","on_invalid_json":"parse_failed"},"props_conf":"[source::json-rule]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none"}`
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/parse-rules", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	responseBody := rec.Body.String()
+	assertErrorResponse(t, rec, http.StatusBadRequest, "VALIDATION_ERROR")
+	if !strings.Contains(responseBody, "plugin_config.array_mode") {
+		t.Fatalf("error body = %s, want array_mode validation message", responseBody)
+	}
+}
+
+func TestParseConfigUsesLatestPluginVersionForExistingAndNewRules(t *testing.T) {
+	t.Setenv("XDP_MYSQL_DISABLED", "true")
+	t.Setenv("XDP_AUTH_ENABLED", "false")
+	t.Setenv("XDP_OUTPUT", "")
+
+	handler := NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil))).(*Handler)
+	createTestSyslogDataSource(t, handler, "JSON Versioned Syslog")
+
+	importJSONParserVersion := func(version string) {
+		t.Helper()
+		importPluginForTest(t, handler, fmt.Sprintf(`{
+			"plugin_code": "json-parser",
+			"plugin_type": "parser",
+			"plugin_version": %q,
+			"name": "JSON Parser",
+			"runtime": "go_builtin",
+			"entrypoint": "builtin://plugins/parser/json",
+			"config_schema": {
+				"type": "object",
+				"required": ["source_field", "target", "array_mode", "on_invalid_json"],
+				"properties": {
+					"source_field": {"type":"string","default":"raw"},
+					"target": {"type":"string","default":"fields"},
+					"array_mode": {"type":"string","default":"json_string"},
+					"on_invalid_json": {"type":"string","default":"continue"}
+				}
+			},
+			"ui_schema": {}
+		}`, version))
+		if version == "1.0.0" {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/plugins/json-parser/enable?plugin_type=parser", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("enable json parser %s status = %d, body = %s", version, rec.Code, rec.Body.String())
+			}
+		}
+	}
+
+	createRule := func(name string) ParseRule {
+		t.Helper()
+		body := fmt.Sprintf(`{"name":%q,"status":"active","parser_plugin":"json-parser","data_source_name":"JSON Versioned Syslog","output_index":"json_app","sample_event":"{\"service\":\"checkout\"}","plugin_config":{"source_field":"raw","target":"fields","flatten_nested":true,"flatten_separator":".","array_mode":"json_string","on_invalid_json":"continue"},"props_conf":"[source::json]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none"}`, name)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/parse-rules", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("create rule %s status = %d, body = %s", name, rec.Code, rec.Body.String())
+		}
+		var rule ParseRule
+		if err := json.NewDecoder(rec.Body).Decode(&rule); err != nil {
+			t.Fatalf("decode rule %s: %v", name, err)
+		}
+		return rule
+	}
+
+	importJSONParserVersion("1.0.0")
+	ruleV1 := createRule("JSON Rule V1")
+	if ruleV1.ParserPluginVersion != "1.0.0" {
+		t.Fatalf("rule v1 version = %q, want 1.0.0", ruleV1.ParserPluginVersion)
+	}
+
+	importJSONParserVersion("1.1.0")
+	ruleV1AfterUpgrade, ok := handler.parseRules[ruleV1.ID]
+	if !ok {
+		t.Fatalf("existing rule missing after plugin upgrade")
+	}
+	stageV1AfterUpgrade := handler.parseRuleStage(ruleV1AfterUpgrade)
+	if stageV1AfterUpgrade.Config["plugin_package_version"] != "1.1.0" {
+		t.Fatalf("existing rule plugin_package_version = %#v, want latest 1.1.0", stageV1AfterUpgrade.Config["plugin_package_version"])
+	}
+	ruleV11 := createRule("JSON Rule V1.1")
+	if ruleV11.ParserPluginVersion != "1.1.0" {
+		t.Fatalf("new rule version = %q, want current enabled 1.1.0", ruleV11.ParserPluginVersion)
+	}
+	stageV11 := parseRuleStage(ruleV11)
+	if stageV11.Version != "1.0.0" {
+		t.Fatalf("json builtin runtime version = %q, want registered executor 1.0.0", stageV11.Version)
+	}
+	if stageV11.Config["plugin_package_version"] != "1.1.0" {
+		t.Fatalf("plugin_package_version = %#v, want 1.1.0", stageV11.Config["plugin_package_version"])
+	}
+
+	storedV1, ok := handler.findParseRule(ruleV1.ID)
+	if !ok {
+		t.Fatalf("existing rule %s not found", ruleV1.ID)
+	}
+	if storedV1.ParserPluginVersion != "1.0.0" {
+		t.Fatalf("existing rule version = %q, want unchanged 1.0.0", storedV1.ParserPluginVersion)
+	}
+}
+
 func TestParseConfigAPIValidatesRequests(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "false")
@@ -404,6 +623,31 @@ func TestParseConfigAPIDerivesInternalHotFieldsFromPreviewWhenMissing(t *testing
 	}
 }
 
+func TestParseConfigDerivesValidHotFieldsWhenPreviewContainsNestedJSONFields(t *testing.T) {
+	fields := []PreviewField{
+		{Field: "level", Value: "warn", Type: "string"},
+		{Field: "service", Value: "checkout", Type: "string"},
+		{Field: "latency", Value: "128", Type: "number"},
+		{Field: "user.id", Value: "u-1", Type: "string"},
+		{Field: "user.geo.country", Value: "CN", Type: "string"},
+	}
+
+	hotFields := deriveInternalHotFieldsFromPreview(fields)
+
+	if !hasHotField(hotFields, "level", "string", true, true) {
+		t.Fatalf("derived hot fields missing level: %#v", hotFields)
+	}
+	if !hasHotField(hotFields, "service", "string", true, true) {
+		t.Fatalf("derived hot fields missing service: %#v", hotFields)
+	}
+	if !hasHotField(hotFields, "latency", "uint64", false, true) {
+		t.Fatalf("derived hot fields missing latency: %#v", hotFields)
+	}
+	if hasHotField(hotFields, "user.id", "string", true, true) || hasHotField(hotFields, "user.geo.country", "string", true, true) {
+		t.Fatalf("nested JSON field names must not become ClickHouse columns: %#v", hotFields)
+	}
+}
+
 func TestRuntimePipelineGroupsParseRulesBySourcePriority(t *testing.T) {
 	t.Setenv("XDP_MYSQL_DISABLED", "true")
 	t.Setenv("XDP_AUTH_ENABLED", "false")
@@ -553,13 +797,23 @@ func runtimePipelineByID(items []pipeline.Pipeline, pipelineID string) *pipeline
 
 func createTestSyslogDataSource(t *testing.T, handler http.Handler, name string) DataSource {
 	t.Helper()
-	port := freeUDPPort(t)
-	body := fmt.Sprintf(`{"name":%q,"plugin_code":"syslog","status":"active","plugin_config":{"collector_port":%d,"transport_protocol":"UDP","encoding":"UTF-8","log_filter_enabled":false}}`, name, port)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
+	t.Setenv("XDP_AGENT_BASE_URL", "")
+	var rec *httptest.ResponseRecorder
+	for attempt := 0; attempt < 5; attempt++ {
+		port := freeUDPPort(t)
+		body := fmt.Sprintf(`{"name":%q,"plugin_code":"syslog","status":"active","plugin_config":{"collector_port":%d,"transport_protocol":"UDP","encoding":"UTF-8","log_filter_enabled":false}}`, name, port)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/datasources", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusOK {
+			break
+		}
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "LISTENER_PORT_UNAVAILABLE") {
+			t.Fatalf("create test syslog datasource status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+	}
+	if rec == nil || rec.Code != http.StatusOK {
 		t.Fatalf("create test syslog datasource status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var source DataSource

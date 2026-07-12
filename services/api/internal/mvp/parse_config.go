@@ -301,7 +301,18 @@ func (h *Handler) normalizeParseRule(rule ParseRule, pathID string, requireName 
 	if rule.Stage != "ingest" {
 		return ParseRule{}, validationError("stage must be ingest")
 	}
-	rule.ParserPluginVersion = firstNonEmpty(strings.TrimSpace(rule.ParserPluginVersion), "1.0.0")
+	if rule.ParserPlugin == "regex" {
+		rule.ParserPluginVersion = "1.0.0"
+	} else {
+		item, ok := h.findPlugin("parser", rule.ParserPlugin, "")
+		if !ok {
+			return ParseRule{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PARSER_PLUGIN_NOT_SUPPORTED", message: "parser plugin is not installed"}
+		}
+		if item.Status != "enabled" && item.Status != "active" {
+			return ParseRule{}, &collectAPIError{status: http.StatusUnprocessableEntity, code: "PARSER_PLUGIN_NOT_ENABLED", message: "parser plugin is not enabled"}
+		}
+		rule.ParserPluginVersion = item.PluginVersion
+	}
 	rule.InputRoute = firstNonEmpty(strings.TrimSpace(rule.InputRoute), "internal_raw_topic")
 	if strings.TrimSpace(rule.OutputIndex) == "" {
 		return ParseRule{}, validationError("output_index is required")
@@ -382,7 +393,24 @@ func validateParseRule(rule ParseRule) error {
 		return err
 	}
 	switch rule.ParserPlugin {
-	case "json":
+	case "json-parser":
+		if stringConfig(rule.PluginConfig, "source_field", "raw") != "raw" {
+			return fmt.Errorf("plugin_config.source_field must be raw")
+		}
+		if stringConfig(rule.PluginConfig, "target", "fields") != "fields" {
+			return fmt.Errorf("plugin_config.target must be fields")
+		}
+		if strings.TrimSpace(stringConfig(rule.PluginConfig, "flatten_separator", ".")) == "" {
+			return fmt.Errorf("plugin_config.flatten_separator is required")
+		}
+		arrayMode := stringConfig(rule.PluginConfig, "array_mode", "json_string")
+		if arrayMode != "json_string" && arrayMode != "expand_index" {
+			return fmt.Errorf("plugin_config.array_mode must be json_string or expand_index")
+		}
+		onInvalidJSON := stringConfig(rule.PluginConfig, "on_invalid_json", "continue")
+		if onInvalidJSON != "continue" && onInvalidJSON != "fail" {
+			return fmt.Errorf("plugin_config.on_invalid_json must be continue or fail")
+		}
 		if sample := strings.TrimSpace(rule.SampleEvent); sample != "" {
 			var value any
 			decoder := json.NewDecoder(strings.NewReader(sample))
@@ -456,7 +484,7 @@ func validatePropsConf(text string) error {
 func previewParseRule(rule ParseRule) ([]PreviewField, error) {
 	sample := rule.SampleEvent
 	switch rule.ParserPlugin {
-	case "json":
+	case "json-parser":
 		var value any
 		decoder := json.NewDecoder(strings.NewReader(sample))
 		decoder.UseNumber()
@@ -562,25 +590,25 @@ func previewDelimitedFields(sample string, config map[string]any) ([]PreviewFiel
 }
 
 func deriveInternalHotFieldsFromPreview(fields []PreviewField) []ch.HotField {
-	candidates := make([]ch.HotField, 0, len(fields))
+	out := make([]ch.HotField, 0, len(fields))
 	for _, field := range fields {
 		name := strings.TrimSpace(field.Field)
 		if name == "" || field.Type == "error" || field.Type == "null" || field.Type == "array" {
 			continue
 		}
 		fieldType := internalHotFieldType(field)
-		candidates = append(candidates, ch.HotField{
+		normalized, err := ch.NormalizeHotFields([]ch.HotField{{
 			Name:         name,
 			Type:         fieldType,
 			Searchable:   internalHotFieldSearchable(fieldType),
 			Aggregatable: true,
-		})
+		}})
+		if err != nil || len(normalized) == 0 {
+			continue
+		}
+		out = append(out, normalized[0])
 	}
-	normalized, err := ch.NormalizeHotFields(candidates)
-	if err != nil {
-		return []ch.HotField{}
-	}
-	return normalized
+	return out
 }
 
 func internalHotFieldType(field PreviewField) string {
@@ -773,7 +801,7 @@ func p1ParserPlugin(code string, name string, category string, description strin
 }
 
 func supportedParserPlugins() map[string]struct{} {
-	return map[string]struct{}{"regex": {}}
+	return map[string]struct{}{"regex": {}, "json-parser": {}}
 }
 
 func parserPluginStoreItems() []mysqlstore.ParserPlugin {
@@ -984,7 +1012,7 @@ func (h *Handler) appendParseRuleStagesLocked(stages []pipeline.StageSpec, sourc
 		Stages: make([]pipeline.StageSpec, 0, len(rules)),
 	}
 	for _, rule := range rules {
-		group.Stages = append(group.Stages, parseRuleStage(rule))
+		group.Stages = append(group.Stages, h.parseRuleStageLocked(rule))
 	}
 	out := []pipeline.StageSpec{group}
 	for _, stage := range stages {
@@ -994,6 +1022,21 @@ func (h *Handler) appendParseRuleStagesLocked(stages []pipeline.StageSpec, sourc
 		out = append(out, stage)
 	}
 	return out
+}
+
+func (h *Handler) parseRuleStage(rule ParseRule) pipeline.StageSpec {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.parseRuleStageLocked(rule)
+}
+
+func (h *Handler) parseRuleStageLocked(rule ParseRule) pipeline.StageSpec {
+	if rule.ParserPlugin != "regex" {
+		if item, ok := h.importedPlugins[pluginKey("parser", rule.ParserPlugin, "")]; ok {
+			rule.ParserPluginVersion = item.PluginVersion
+		}
+	}
+	return parseRuleStage(rule)
 }
 
 func (h *Handler) parseRuleOutputIndexLocked(source DataSource) string {
@@ -1102,28 +1145,33 @@ func parseRuleStage(rule ParseRule) pipeline.StageSpec {
 		hotFields = append(hotFields, map[string]any{"name": field.Name, "type": field.Type, "searchable": field.Searchable, "aggregatable": field.Aggregatable, "aliases": field.Aliases})
 	}
 	pluginCode := "props-conf-parser"
+	runtimeVersion := rule.ParserPluginVersion
 	config := map[string]any{
-		"parser_plugin":    rule.ParserPlugin,
-		"props_conf":       rule.PropsConf,
-		"input_route":      rule.InputRoute,
-		"output_index":     rule.OutputIndex,
-		"data_source_name": rule.DataSourceName,
-		"sourcetype":       rule.Name,
-		"rule_id":          rule.ID,
-		"plugin_config":    rule.PluginConfig,
-		"hot_fields":       hotFields,
+		"parser_plugin":          rule.ParserPlugin,
+		"plugin_package_version": rule.ParserPluginVersion,
+		"props_conf":             rule.PropsConf,
+		"input_route":            rule.InputRoute,
+		"output_index":           rule.OutputIndex,
+		"data_source_name":       rule.DataSourceName,
+		"sourcetype":             rule.Name,
+		"rule_id":                rule.ID,
+		"plugin_config":          rule.PluginConfig,
+		"hot_fields":             hotFields,
 	}
-	if rule.ParserPlugin == "regex" {
-		pluginCode = "regex"
+	if rule.ParserPlugin == "regex" || rule.ParserPlugin == "json-parser" {
+		pluginCode = rule.ParserPlugin
 		for key, value := range rule.PluginConfig {
 			config[key] = value
 		}
+	}
+	if rule.ParserPlugin == "json-parser" {
+		runtimeVersion = "1.0.0"
 	}
 	return pipeline.StageSpec{
 		ID:      "parse-rule-" + rule.Code,
 		Type:    "parser",
 		Plugin:  pluginCode,
-		Version: rule.ParserPluginVersion,
+		Version: runtimeVersion,
 		Config:  config,
 		OnError: &pipeline.ErrorPolicy{Action: "continue"},
 	}

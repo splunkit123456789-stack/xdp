@@ -23,12 +23,14 @@ CLICKHOUSE_USER="${CLICKHOUSE_USER:-xdp}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-xdp}"
 HOST_AGENT_BIN="${XDP_HOST_AGENT_BIN:-$ROOT_DIR/build/host-bin/xdp-agent}"
 HOST_AGENT_ADDR="${XDP_AGENT_ADDR:-127.0.0.1:8081}"
+HOST_AGENT_ADDR_EXPLICIT="${XDP_AGENT_ADDR:-}"
+API_AGENT_BASE_URL_EXPLICIT="${XDP_AGENT_BASE_URL:-}"
 HOST_AGENT_KAFKA_BROKERS="${XDP_KAFKA_BROKERS:-127.0.0.1:9092}"
 HOST_AGENT_CONFIG_API="${XDP_CONFIG_API:-$API_BASE}"
 HOST_AGENT_RELOAD_INTERVAL="${XDP_CONFIG_RELOAD_INTERVAL:-2s}"
 HOST_AGENT_PORT="${HOST_AGENT_ADDR##*:}"
 HOST_AGENT_HEALTH_URL="${XDP_AGENT_HEALTH_URL:-http://127.0.0.1:$HOST_AGENT_PORT/healthz}"
-API_AGENT_BASE_URL="${XDP_AGENT_BASE_URL:-http://host.docker.internal:$HOST_AGENT_PORT}"
+API_AGENT_BASE_URL="${XDP_AGENT_BASE_URL:-http://127.0.0.1:$HOST_AGENT_PORT}"
 
 DRY_RUN=0
 STOP_ONLY=0
@@ -101,6 +103,24 @@ run_env() {
     return 0
   fi
   env "$@"
+}
+
+find_free_tcp_port() {
+  python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+refresh_agent_urls() {
+  HOST_AGENT_PORT="${HOST_AGENT_ADDR##*:}"
+  if [ -z "$API_AGENT_BASE_URL_EXPLICIT" ]; then
+    API_AGENT_BASE_URL="http://127.0.0.1:$HOST_AGENT_PORT"
+  fi
+  HOST_AGENT_HEALTH_URL="${XDP_AGENT_HEALTH_URL:-http://127.0.0.1:$HOST_AGENT_PORT/healthz}"
 }
 
 require_command() {
@@ -196,6 +216,34 @@ wait_http() {
   return 1
 }
 
+wait_process_http() {
+  local name="$1"
+  local url="$2"
+  local pid="$3"
+  local log_file="$4"
+  local max="${5:-90}"
+  local i
+  for i in $(seq 1 "$max"); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      printf '%s process exited before ready: pid=%s\n' "$name" "$pid" >&2
+      if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        tail -n 80 "$log_file" >&2 || true
+      fi
+      return 1
+    fi
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      printf '%s ready: %s\n' "$name" "$url"
+      return 0
+    fi
+    sleep 1
+  done
+  printf '%s not ready: %s\n' "$name" "$url" >&2
+  if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+    tail -n 80 "$log_file" >&2 || true
+  fi
+  return 1
+}
+
 wait_kafka() {
   local i
   for i in $(seq 1 90); do
@@ -277,14 +325,62 @@ stop_stale_host_agent_ports() {
     printf 'kill stale xdp-agent on %s if present\n' "$HOST_AGENT_ADDR"
     return 0
   fi
-  local host_agent_tcp_port pids pid
+  local host_agent_tcp_port pids pid pidfile i
   host_agent_tcp_port="${HOST_AGENT_ADDR##*:}"
-  pids="$(lsof -tiTCP:"$host_agent_tcp_port" -sTCP:LISTEN 2>/dev/null || true)"
+  pids="$(
+    {
+      for pidfile in "$CACHE_DIR/agent.pid" "$ROOT_DIR/.cache/e2e/agent.pid"; do
+        if [ -f "$pidfile" ]; then
+          cat "$pidfile" 2>/dev/null || true
+        fi
+      done
+      lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '$1 == "xdp-agent" {print $2}' || true
+      lsof -nP -iUDP 2>/dev/null | awk '$1 == "xdp-agent" {print $2}' || true
+      lsof -tiTCP:"$host_agent_tcp_port" -sTCP:LISTEN 2>/dev/null || true
+    } | sort -u
+  )"
   for pid in $pids; do
-    if ps -p "$pid" -o command= 2>/dev/null | grep -q 'xdp-agent'; then
-      kill "$pid" >/dev/null 2>&1 || true
-    fi
+    kill "$pid" >/dev/null 2>&1 || true
   done
+  for i in $(seq 1 20); do
+    if ! lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '$1 == "xdp-agent" {found=1} END {exit found ? 0 : 1}'; then
+      break
+    fi
+    sleep 0.2
+  done
+  pids="$(
+    {
+      lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '$1 == "xdp-agent" {print $2}' || true
+      lsof -nP -iUDP 2>/dev/null | awk '$1 == "xdp-agent" {print $2}' || true
+      lsof -tiTCP:"$host_agent_tcp_port" -sTCP:LISTEN 2>/dev/null || true
+    } | sort -u
+  )"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill -9 $pids >/dev/null 2>&1 || true
+  fi
+  run rm -f "$CACHE_DIR/agent.pid" "$ROOT_DIR/.cache/e2e/agent.pid"
+}
+
+resolve_host_agent_addr() {
+  refresh_agent_urls
+  if [ "$DRY_RUN" = "1" ]; then
+    return 0
+  fi
+  stop_stale_host_agent_ports
+  if ! lsof -tiTCP:"$HOST_AGENT_PORT" -sTCP:LISTEN >/dev/null 2>&1 && \
+     ! lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '$1 == "xdp-agent" {found=1} END {exit found ? 0 : 1}'; then
+    return 0
+  fi
+  if [ -n "$HOST_AGENT_ADDR_EXPLICIT" ] || [ -n "$API_AGENT_BASE_URL_EXPLICIT" ]; then
+    printf 'host agent port still in use: %s\n' "$HOST_AGENT_PORT" >&2
+    lsof -nP -iTCP:"$HOST_AGENT_PORT" -sTCP:LISTEN >&2 || true
+    exit 1
+  fi
+  HOST_AGENT_PORT="$(find_free_tcp_port)"
+  HOST_AGENT_ADDR="127.0.0.1:$HOST_AGENT_PORT"
+  refresh_agent_urls
+  printf 'host agent port in use; switched to %s\n' "$HOST_AGENT_ADDR"
 }
 
 stop_legacy_agent_containers() {
@@ -306,8 +402,8 @@ stop_legacy_agent_containers() {
 start_host_agent() {
   printf '== start host agent ==\n'
   stop_host_agent
-  stop_stale_host_agent_ports
   stop_legacy_agent_containers
+  refresh_agent_urls
   if [ "$DRY_RUN" = "1" ]; then
     print_cmd env \
       "XDP_AGENT_ADDR=$HOST_AGENT_ADDR" \
@@ -332,7 +428,7 @@ start_host_agent() {
     "$HOST_AGENT_BIN" >"$LOG_DIR/agent.log" 2>&1 &
   HOST_AGENT_PID="$!"
   printf '%s\n' "$HOST_AGENT_PID" >"$CACHE_DIR/agent.pid"
-  wait_http agent "$HOST_AGENT_HEALTH_URL" 60
+  wait_process_http agent "$HOST_AGENT_HEALTH_URL" "$HOST_AGENT_PID" "$LOG_DIR/agent.log" 60
 }
 
 start_frontend_console() {
@@ -370,6 +466,7 @@ XDP one-click stack is running.
 
 Frontend: http://127.0.0.1:$FRONTEND_PORT
 API:      $API_BASE
+Agent:    $API_AGENT_BASE_URL
 Login:    $AUTH_USERNAME / $AUTH_PASSWORD
 Token:    $AUTH_TOKEN
 
@@ -418,6 +515,7 @@ if [ "$DRY_RUN" != "1" ]; then
   fi
 fi
 
+resolve_host_agent_addr
 write_compose_override
 build_backend_binaries
 start_dependencies

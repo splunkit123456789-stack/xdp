@@ -151,10 +151,11 @@ func TestBuildTimelineSQLAggregatesAllMatchingEventsWithoutLimit(t *testing.T) {
 }
 
 func TestIndexTableDDLUsesShanghaiTimezone(t *testing.T) {
-	sql := indexTableDDL("xdp.events_audit")
+	sql := indexTableDDL("xdp.events_audit", 14)
 	mustContain(t, sql, "event_time DateTime64(3, 'Asia/Shanghai')")
 	mustContain(t, sql, "ingest_time DateTime64(3, 'Asia/Shanghai')")
 	mustContain(t, sql, "created_at DateTime64(3, 'Asia/Shanghai') DEFAULT now64(3, 'Asia/Shanghai')")
+	mustContain(t, sql, "TTL event_date + INTERVAL 14 DAY DELETE")
 	mustContain(t, sql, "parse_status LowCardinality(String) DEFAULT 'unparsed'")
 	mustContain(t, sql, "parse_rule_id String DEFAULT ''")
 	mustContain(t, sql, "parse_rule_name String DEFAULT ''")
@@ -165,14 +166,21 @@ func TestIndexTableDDLUsesShanghaiTimezone(t *testing.T) {
 	}
 }
 
+func TestIndexTrendIncludesLiveSource(t *testing.T) {
+	trend := IndexTrend{Source: "live"}
+	if trend.Source != "live" {
+		t.Fatalf("trend source = %q, want live", trend.Source)
+	}
+}
+
 func TestBuildWhereConditionsFallsBackToFieldsJSONForColdField(t *testing.T) {
-	conditions := buildWhereConditions("", "cold_field", "value", time.Time{}, time.Time{}, nil)
+	conditions := buildWhereConditions("", "cold_field", "value", nil, time.Time{}, time.Time{}, nil)
 	sql := strings.Join(conditions, " AND ")
 	mustContain(t, sql, "JSONExtractString(fields_json, 'cold_field') = 'value'")
 }
 
 func TestBuildWhereConditionsMapsBareSourceToSourceName(t *testing.T) {
-	conditions := buildWhereConditions("", "source", "Firewall Syslog", time.Time{}, time.Time{}, nil)
+	conditions := buildWhereConditions("", "source", "Firewall Syslog", nil, time.Time{}, time.Time{}, nil)
 	sql := strings.Join(conditions, " AND ")
 	mustContain(t, sql, "source_name = 'Firewall Syslog'")
 	if strings.Contains(sql, "JSONExtractString(fields_json, 'source')") {
@@ -205,12 +213,24 @@ func TestEventToRowUsesDatasourceNameAndParseRuleNameMetadata(t *testing.T) {
 }
 
 func TestBuildWhereConditionsUsesParseStatusMetadataColumn(t *testing.T) {
-	conditions := buildWhereConditions("", "parse_status", "parse_failed", time.Time{}, time.Time{}, nil)
+	conditions := buildWhereConditions("", "parse_status", "parse_failed", nil, time.Time{}, time.Time{}, nil)
 	sql := strings.Join(conditions, " AND ")
 	mustContain(t, sql, "parse_status = 'parse_failed'")
 	if strings.Contains(sql, "JSONExtractString(fields_json, 'parse_status')") {
 		t.Fatalf("parse_status must use metadata column, got SQL: %s", sql)
 	}
+}
+
+func TestBuildWhereConditionsIncludesMultipleFieldFilters(t *testing.T) {
+	conditions := buildWhereConditions("", "", "", []FieldFilter{
+		{Field: "service", Value: "checkout"},
+		{Field: "parse_status", Value: "parsed"},
+		{Field: "src", Value: "10.0.1.8"},
+	}, time.Time{}, time.Time{}, []HotField{{Name: "src_ip", Type: "string", Searchable: true, Aggregatable: true, Aliases: []string{"src"}}})
+	sql := strings.Join(conditions, " AND ")
+	mustContain(t, sql, "JSONExtractString(fields_json, 'service') = 'checkout'")
+	mustContain(t, sql, "parse_status = 'parsed'")
+	mustContain(t, sql, "src_ip = '10.0.1.8'")
 }
 
 func TestBuildStatsSQLCanGroupByParseStatus(t *testing.T) {
@@ -237,11 +257,11 @@ func TestHotFieldDDLDoesNotMaterializeHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hotFieldDDL() error = %v", err)
 	}
-	mustContain(t, sql, "ADD COLUMN IF NOT EXISTS src_ip String MATERIALIZED JSONExtractString(fields_json, 'src_ip')")
+	mustContain(t, sql, "ADD COLUMN IF NOT EXISTS src_ip String DEFAULT ''")
 	mustContain(t, sql, "ADD INDEX IF NOT EXISTS idx_hot_src_ip src_ip TYPE bloom_filter(0.01) GRANULARITY 4")
-	mustContain(t, sql, "ADD COLUMN IF NOT EXISTS bytes UInt64 MATERIALIZED toUInt64OrZero(JSONExtractString(fields_json, 'bytes'))")
-	if strings.Contains(sql, "MATERIALIZE COLUMN") || strings.Contains(sql, "MATERIALIZE INDEX") {
-		t.Fatalf("hot field DDL must not backfill historical data: %s", sql)
+	mustContain(t, sql, "ADD COLUMN IF NOT EXISTS bytes UInt64 DEFAULT 0")
+	if strings.Contains(sql, "MATERIALIZED") || strings.Contains(sql, "JSONExtractString") || strings.Contains(sql, "MATERIALIZE COLUMN") || strings.Contains(sql, "MATERIALIZE INDEX") {
+		t.Fatalf("hot field DDL must use ordinary columns without historical backfill: %s", sql)
 	}
 }
 

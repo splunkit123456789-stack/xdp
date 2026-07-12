@@ -61,15 +61,14 @@ describe("XDP Console MVP pages", () => {
     const wrapper = await mountAuthenticatedApp();
 
     expect(wrapper.get('[data-testid="console-shell"]').text()).toContain("XDP>Console");
-    expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("Syslog / Kafka");
+    expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("Syslog / 导入插件");
     expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("监听端口");
     expect(wrapper.find('[data-testid="input-form-card"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="show-input-form"]').trigger("click");
-    await wrapper.get('[data-testid="input-plugin-kafka"]').trigger("click");
 
-    expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("Broker 地址");
-    expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("测试连通性");
+    expect(wrapper.get('[data-testid="collect-page"]').text()).toContain("Syslog");
+    expect(wrapper.find('[data-testid="input-plugin-kafka"]').exists()).toBe(false);
   });
 
   it("uses an operations console theme after login instead of the login gradient theme", async () => {
@@ -80,7 +79,7 @@ describe("XDP Console MVP pages", () => {
     expect(wrapper.get(".console-shell .brand-mark").classes()).toContain("console-brand-mark");
     await wrapper.get('[data-testid="show-input-form"]').trigger("click");
     expect(wrapper.get('[data-testid="input-plugin-syslog"] .plugin-icon').classes()).toContain("icon-syslog");
-    expect(wrapper.get('[data-testid="input-plugin-kafka"] .plugin-icon').classes()).toContain("icon-kafka");
+    expect(wrapper.find('[data-testid="input-plugin-kafka"]').exists()).toBe(false);
   });
 
   it("pins collect, parse, and index add actions to the panel header right side", async () => {
@@ -195,6 +194,7 @@ describe("XDP Console MVP pages", () => {
       .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
       .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
       .mockResolvedValueOnce(jsonResponse({
         plugins: [
           { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "active", checksum: "builtin" },
@@ -246,16 +246,457 @@ describe("XDP Console MVP pages", () => {
       configurable: true
     });
     await wrapper.get('[data-testid="plugin-upload-file"]').trigger("change");
+    expect(wrapper.get('[data-testid="plugin-upload-filename"]').text()).toBe("demo-kafka.zip");
     await wrapper.get('[data-testid="plugin-upload-button"]').trigger("click");
     await flushPromises();
 
-    const uploadCall = global.fetch.mock.calls.find(([url]) => url === "/api/v1/plugins/import?plugin_type=input");
+    const uploadCall = global.fetch.mock.calls.find(([url]) => url === "/api/v1/plugins/import");
     expect(uploadCall).toBeTruthy();
     expect(uploadCall[1].method).toBe("POST");
     expect(uploadCall[1].headers.Authorization).toBe("Bearer test-token");
     expect(uploadCall[1].body).toBeInstanceOf(FormData);
     expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("Demo Kafka");
     expect(wrapper.get('[data-testid="plugin-upload-status"]').text()).toContain("导入成功");
+  });
+
+  it("loads plugin management pages independently from the enabled configuration catalog", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi.fn(async (url) => {
+      const path = String(url);
+      if (path === "/api/v1/auth") return jsonResponse(authStatus(true));
+      if (path.startsWith("/api/v1/datasources?")) return jsonResponse({ datasources: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (path.startsWith("/api/v1/indexes?")) return jsonResponse({ indexes: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (path === "/api/v1/parser-plugins") return jsonResponse({ plugins: [] });
+      if (path.startsWith("/api/v1/parse-rules?")) return jsonResponse({ parse_rules: [], pagination: { page: 1, page_size: 10, total: 0, total_pages: 1 } });
+      if (path === "/api/v1/search/favorites") return jsonResponse({ saved_searches: [] });
+      if (path === "/api/v1/plugins/catalog?plugin_type=input&status=enabled") {
+        return jsonResponse({
+          plugins: [
+            { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "enabled", checksum: "builtin" },
+            { plugin_code: "kafka-page-2", plugin_type: "input", plugin_version: "1.0.0", name: "Kafka Page 2", status: "enabled", checksum: "sha256:kafka" }
+          ]
+        });
+      }
+      if (path === "/api/v1/plugins?plugin_type=input&page=1&page_size=10") {
+        return jsonResponse({
+          plugins: [{ plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", status: "enabled", checksum: "builtin" }],
+          pagination: { page: 1, page_size: 10, total: 12, total_pages: 2 },
+          type_counts: { input: 12, parser: 3, search_command: 5 }
+        });
+      }
+      if (path === "/api/v1/plugins?plugin_type=input&page=2&page_size=10") {
+        return jsonResponse({
+          plugins: [{ plugin_code: "kafka-page-2", plugin_type: "input", plugin_version: "1.0.0", name: "Kafka Page 2", status: "enabled", checksum: "sha256:kafka" }],
+          pagination: { page: 2, page_size: 10, total: 12, total_pages: 2 },
+          type_counts: { input: 12, parser: 3, search_command: 5 }
+        });
+      }
+      if (path === "/api/v1/plugins?plugin_type=parser&page=1&page_size=10") {
+        return jsonResponse({
+          plugins: [{ plugin_code: "regex", plugin_type: "parser", plugin_version: "1.0.0", name: "Regex", status: "enabled", checksum: "builtin" }],
+          pagination: { page: 1, page_size: 10, total: 3, total_pages: 1 },
+          type_counts: { input: 12, parser: 3, search_command: 5 }
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/catalog?plugin_type=input&status=enabled", expect.any(Object));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins?plugin_type=input&page=1&page_size=10", expect.any(Object));
+    expect(wrapper.get('[data-testid="plugin-tab-input"]').text()).toContain("12");
+
+    await wrapper.get('[data-testid="plugin-next"]').trigger("click");
+    await flushPromises();
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins?plugin_type=input&page=2&page_size=10", expect.any(Object));
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("Kafka Page 2");
+
+    await wrapper.get('[data-testid="plugin-tab-parser"]').trigger("click");
+    await flushPromises();
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins?plugin_type=parser&page=1&page_size=10", expect.any(Object));
+    expect(wrapper.get('[data-testid="plugin-tab-parser"]').text()).toContain("3");
+
+    await wrapper.get('[data-testid="plugin-tab-input"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugin-page-2"]').classes()).toContain("active");
+  });
+
+  it("loads plugin detail, versions, schema, and manages plugin version state", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus(true)))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", runtime: "go_builtin", status: "disabled", checksum: "sha256:demo" }
+        ]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "demo-kafka",
+        plugin_type: "input",
+        plugin_version: "1.0.0",
+        name: "Demo Kafka",
+        runtime: "go_builtin",
+        status: "disabled",
+        checksum: "sha256:demo",
+        references: { count: 0 }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        config_schema: { type: "object", properties: { brokers: { type: "string" } }, required: ["brokers"] },
+        ui_schema: { order: ["brokers"] }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "demo-kafka",
+        plugin_type: "input",
+        plugin_version: "1.0.0",
+        name: "Demo Kafka",
+        runtime: "go_builtin",
+        status: "disabled",
+        checksum: "sha256:demo",
+        references: { count: 0 }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        config_schema: { type: "object", properties: { brokers: { type: "string" } }, required: ["brokers"] },
+        ui_schema: { order: ["brokers"] }
+      }))
+      .mockResolvedValueOnce(jsonResponse({ plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", status: "enabled", checksum: "sha256:demo" }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [{ plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", status: "enabled", checksum: "sha256:demo" }]
+      }))
+      .mockResolvedValueOnce(jsonResponse({ plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", status: "disabled", checksum: "sha256:demo" }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({}, 204))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="plugin-detail-demo-kafka"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="plugin-detail-row-demo-kafka"]').text()).toContain("Demo Kafka");
+    expect(wrapper.get('[data-testid="plugin-detail-panel"]').text()).toContain("sha256:demo");
+    expect(wrapper.get('[data-testid="plugin-detail-panel"]').text()).toContain("brokers");
+    expect(wrapper.get('[data-testid="plugin-detail-demo-kafka"]').classes()).toContain("plugin-action-detail");
+    expect(wrapper.get('[data-testid="plugin-detail-demo-kafka"]').text()).toBe("收起详情");
+
+    await wrapper.get('[data-testid="plugin-detail-demo-kafka"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-detail-row-demo-kafka"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="plugin-detail-demo-kafka"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugin-detail-row-demo-kafka"]').text()).toContain("Demo Kafka");
+
+    expect(wrapper.find('[data-testid="plugin-version-row-demo-kafka-1.0.0"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="plugin-enable-demo-kafka"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("已启用");
+    expect(wrapper.get('[data-testid="plugin-disable-demo-kafka"]').classes()).toContain("plugin-action-disable");
+
+    await wrapper.get('[data-testid="plugin-disable-demo-kafka"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("未启用");
+    expect(wrapper.get('[data-testid="plugin-delete-demo-kafka"]').classes()).toContain("plugin-action-delete");
+
+    await wrapper.get('[data-testid="plugin-delete-demo-kafka"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).not.toContain("Demo Kafka");
+
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/demo-kafka?plugin_type=input", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer test-token" }) }));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/demo-kafka/schema?plugin_type=input", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer test-token" }) }));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/demo-kafka/enable?plugin_type=input", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer test-token" }) }));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/demo-kafka/disable?plugin_type=input", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer test-token" }) }));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/demo-kafka?plugin_type=input", expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ Authorization: "Bearer test-token" }) }));
+  });
+
+  it("opens inline details for imported input, parser, and search command plugins only", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus(true)))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", runtime: "go_builtin", status: "enabled", checksum: "sha256:kafka" },
+          { plugin_code: "regex", plugin_type: "parser", plugin_version: "1.0.0", name: "Regex", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: "vendor-fw", plugin_type: "parser", plugin_version: "2.0.0", name: "Vendor Firewall Parser", runtime: "go_plugin", status: "enabled", checksum: "sha256:parser" },
+          { plugin_code: "stats", plugin_type: "search_command", plugin_version: "1.0.0", name: "stats", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: "table", plugin_type: "search_command", plugin_version: "1.0.0", name: "Table Command", runtime: "go_plugin", status: "disabled", checksum: "sha256:table" }
+        ]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "demo-kafka",
+        plugin_type: "input",
+        plugin_version: "1.0.0",
+        name: "Demo Kafka",
+        runtime: "go_builtin",
+	        status: "enabled",
+	        checksum: "sha256:kafka",
+	        references: {
+	          count: 2,
+	          items: [
+	            { type: "datasource", id: "ds-kafka", name: "Kafka Source", status: "active" },
+	            { type: "datasource", id: "ds-kafka-backup", name: "Kafka Backup", status: "disabled" }
+	          ]
+	        }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        config_schema: { type: "object", properties: { brokers: { type: "string" } } },
+        ui_schema: { order: ["brokers"] }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "vendor-fw",
+        plugin_type: "parser",
+        plugin_version: "2.0.0",
+        name: "Vendor Firewall Parser",
+        runtime: "go_plugin",
+	        status: "enabled",
+	        checksum: "sha256:parser",
+	        references: {
+	          count: 1,
+	          items: [{ type: "parse_rule", id: "rule-fw", name: "Vendor FW", status: "active" }]
+	        }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        config_schema: { type: "object", properties: { regex_pattern: { type: "string" } } },
+        ui_schema: { order: ["regex_pattern"] }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "table",
+        plugin_type: "search_command",
+        plugin_version: "1.0.0",
+        name: "Table Command",
+        runtime: "go_plugin",
+	        status: "disabled",
+	        checksum: "sha256:table",
+	        references: { count: 0, items: [] }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        config_schema: { type: "object", properties: { fields: { type: "array" } } },
+        ui_schema: { order: ["fields"] }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        audits: [
+          {
+            request_id: "req-1",
+            plugin_code: "table",
+            plugin_type: "search_command",
+            plugin_version: "1.0.0",
+            command_name: "table",
+            runtime: "executable_search_command",
+            elapsed_ms: 12,
+            input_rows: 3,
+            output_rows: 3,
+            success: true,
+            error_code: "",
+            created_at: "2026-07-12T12:00:00+08:00"
+          }
+        ]
+      }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="plugin-detail-syslog"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="plugin-detail-demo-kafka"]').trigger("click");
+    await flushPromises();
+	    expect(wrapper.get('[data-testid="plugin-detail-row-demo-kafka"]').text()).toContain("引用 2 处");
+	    expect(wrapper.get('[data-testid="plugin-detail-row-demo-kafka"]').text()).toContain("Kafka Source");
+	    expect(wrapper.get('[data-testid="plugin-detail-row-demo-kafka"]').text()).toContain("采集源");
+	    expect(wrapper.find('[data-testid="plugin-disable-demo-kafka"]').exists()).toBe(true);
+	    expect(wrapper.find('[data-testid="plugin-delete-demo-kafka"]').exists()).toBe(false);
+	    expect(wrapper.get('[data-testid="plugin-detail-row-demo-kafka"]').text()).toContain("被引用，不能停用或删除");
+	    expect(wrapper.get('[data-testid="plugin-detail-panel"]').text()).toContain("brokers");
+
+    await wrapper.get('[data-testid="plugin-tab-parser"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-detail-regex"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="plugin-detail-vendor-fw"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-detail-row-demo-kafka"]').exists()).toBe(false);
+	    expect(wrapper.get('[data-testid="plugin-detail-row-vendor-fw"]').text()).toContain("Vendor Firewall Parser");
+	    expect(wrapper.get('[data-testid="plugin-detail-row-vendor-fw"]').text()).toContain("Vendor FW");
+	    expect(wrapper.get('[data-testid="plugin-detail-row-vendor-fw"]').text()).toContain("解析规则");
+	    expect(wrapper.get('[data-testid="plugin-detail-panel"]').text()).toContain("regex_pattern");
+
+    await wrapper.get('[data-testid="plugin-tab-search_command"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-detail-stats"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="plugin-detail-table"]').trigger("click");
+    await flushPromises();
+	    expect(wrapper.find('[data-testid="plugin-detail-row-vendor-fw"]').exists()).toBe(false);
+	    expect(wrapper.get('[data-testid="plugin-detail-row-table"]').text()).toContain("Table Command");
+	    expect(wrapper.get('[data-testid="plugin-detail-row-table"]').text()).not.toContain("引用类型");
+	    expect(wrapper.get('[data-testid="plugin-detail-row-table"]').text()).not.toContain("引用对象");
+	    expect(wrapper.get('[data-testid="plugin-execution-audits"]').text()).toContain("最近执行记录");
+	    expect(wrapper.get('[data-testid="plugin-execution-audits"]').text()).toContain("table");
+	    expect(wrapper.get('[data-testid="plugin-execution-audits"]').text()).toContain("12ms");
+	    expect(wrapper.get('[data-testid="plugin-execution-audits"]').text()).toContain("成功");
+	    expect(wrapper.find('[data-testid="plugin-enable-table"]').exists()).toBe(true);
+	    expect(wrapper.find('[data-testid="plugin-disable-table"]').exists()).toBe(false);
+	    expect(wrapper.find('[data-testid="plugin-delete-table"]').exists()).toBe(true);
+	    expect(wrapper.get('[data-testid="plugin-detail-panel"]').text()).toContain("fields");
+
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/demo-kafka?plugin_type=input", expect.any(Object));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/vendor-fw?plugin_type=parser", expect.any(Object));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/table?plugin_type=search_command", expect.any(Object));
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/table/execution-audits?plugin_type=search_command&limit=20", expect.any(Object));
+  });
+
+  it("shows plugin package and lifecycle error codes in the page", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus(true)))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", runtime: "go_builtin", status: "enabled", checksum: "sha256:demo" }
+        ]
+      }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "PLUGIN_MANIFEST_MISSING", message: "manifest.json is required" } }, 400))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "PLUGIN_ALREADY_EXISTS", message: "plugin already exists, confirm overwrite to replace the current plugin package" } }, 409))
+      .mockResolvedValueOnce(jsonResponse({
+        plugin_code: "demo-kafka",
+        plugin_type: "input",
+        plugin_version: "1.0.0",
+        name: "Demo Kafka",
+        runtime: "go_builtin",
+        status: "enabled",
+        checksum: "sha256:demo-overwrite"
+      }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", runtime: "go_builtin", status: "enabled", checksum: "sha256:demo-overwrite" }
+        ]
+      }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "PLUGIN_IN_USE", message: "plugin is in use" } }, 409));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    const file = new File(["bad plugin"], "bad.zip", { type: "application/zip" });
+    Object.defineProperty(wrapper.get('[data-testid="plugin-upload-file"]').element, "files", {
+      value: [file],
+      configurable: true
+    });
+    await wrapper.get('[data-testid="plugin-upload-file"]').trigger("change");
+    await wrapper.get('[data-testid="plugin-upload-button"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("PLUGIN_MANIFEST_MISSING");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("manifest.json is required");
+    expect(wrapper.get('[data-testid="plugin-upload-error"]').text()).toContain("PLUGIN_MANIFEST_MISSING");
+
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+    await wrapper.get('[data-testid="plugin-upload-button"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugin-upload-status"]').text()).toContain("已覆盖");
+    expect(global.fetch).toHaveBeenCalledWith("/api/v1/plugins/import?overwrite=true", expect.objectContaining({ method: "POST" }));
+
+    await wrapper.get('[data-testid="plugin-disable-demo-kafka"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("PLUGIN_IN_USE");
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("plugin is in use");
+  });
+
+  it("shows built-in plugins without detail actions", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus(true)))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: "regex", plugin_type: "parser", plugin_version: "1.0.0", name: "Regex", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: "stats", plugin_type: "search_command", plugin_version: "1.0.0", name: "stats", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: "demo-kafka", plugin_type: "input", plugin_version: "1.0.0", name: "Demo Kafka", runtime: "go_builtin", status: "disabled", checksum: "sha256:demo" }
+        ]
+      }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="plugins-page"]').text()).toContain("Syslog");
+    expect(wrapper.find('[data-testid="plugin-detail-syslog"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="plugin-detail-demo-kafka"]').exists()).toBe(true);
+
+    await wrapper.get('[data-testid="plugin-tab-parser"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-detail-regex"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="plugin-tab-search_command"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-detail-stats"]').exists()).toBe(false);
+  });
+
+  it("deduplicates display-equivalent built-in plugins in the list", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus(true)))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        plugins: [
+          { plugin_code: "syslog", plugin_type: "input", plugin_version: "1.0.0", name: "Syslog", runtime: "go_builtin", status: "active", checksum: "builtin" },
+          { plugin_code: " syslog ", plugin_type: "collect", plugin_version: "", name: "Syslog legacy", runtime: "go_builtin", status: "active", checksum: "legacy" }
+        ]
+      }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll('[data-testid="plugin-row-syslog-1.0.0"]')).toHaveLength(1);
+    expect(wrapper.find('[data-testid="plugin-detail-syslog"]').exists()).toBe(false);
   });
 
   it("persists the current console module across refresh and clears it on logout", async () => {
@@ -370,6 +811,50 @@ describe("XDP Console MVP pages", () => {
     expect(cells).toEqual(["api", "2"]);
     expect(searchResults.text()).not.toContain("service=api");
     expect(searchResults.text()).not.toContain("total=2");
+  });
+
+  it("renders table search command rows as plain table values", async () => {
+    localStorage.setItem("xdp_api_token", "test-token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(authStatus()))
+      .mockResolvedValueOnce(jsonResponse({ datasources: [] }))
+      .mockResolvedValueOnce(jsonResponse({ indexes: [{ index_name: "app", name: "app", ttl_days: 30, rows: 2, status: "active" }] }))
+      .mockResolvedValueOnce(jsonResponse({ plugins: [] }))
+      .mockResolvedValueOnce(jsonResponse({ saved_searches: [] }))
+      .mockResolvedValueOnce(jsonResponse({ parse_rules: [] }));
+
+    const wrapper = mount(App);
+    await flushPromises();
+    await wrapper.get('[data-testid="nav-search"]').trigger("click");
+    await wrapper.get('[data-testid="search-query"]').setValue("index=app | table service action bytes | sort - bytes | head 2");
+    global.fetch.mockResolvedValueOnce(jsonResponse({
+      mode: "table",
+      spl: "index=app | table service action bytes | sort - bytes | head 2",
+      index: "app",
+      elapsed_ms: 12,
+      search_command: { plugin_code: "table", plugin_type: "search_command", plugin_version: "1.0.0", runtime: "go_builtin", output_mode: "table" },
+      table: {
+        fields: ["service", "action", "bytes"],
+        rows: [
+          { service: "worker", action: "deny", bytes: 300 },
+          { service: "api", action: "allow", bytes: 100 }
+        ]
+      },
+      pagination: { limit: 20, offset: 0, page: 1, returned: 2, has_more: false, total: 2 }
+    })).mockResolvedValueOnce(jsonResponse({ interval: "hour", buckets: [] }));
+
+    await wrapper.get('[data-testid="search-button"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="result-mode"]').text()).toContain("表格视图");
+    const searchResults = wrapper.get('[data-testid="search-results"]');
+    const headers = searchResults.findAll("thead th").map((cell) => cell.text());
+    const cells = searchResults.findAll("tbody td").map((cell) => cell.text());
+    expect(headers).toEqual(["service", "action", "bytes"]);
+    expect(cells).toEqual(["worker", "deny", "300", "api", "allow", "100"]);
+    expect(searchResults.text()).not.toContain("service=worker");
+    expect(searchResults.text()).not.toContain("bytes=300");
   });
 
   it("does not render duplicate timeline y-axis labels when max count is one", async () => {
