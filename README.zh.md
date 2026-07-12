@@ -246,35 +246,6 @@ curl -sS 'http://127.0.0.1:8080/api/v1/search?q=index%3Daudit%20%7C%20stats%20co
   -H 'Authorization: Bearer xdp-dev-token' | python3 -m json.tool
 ```
 
-## 配置与认证
-
-一键脚本默认启用基础认证：
-
-```text
-XDP_AUTH_ENABLED=true
-XDP_AUTH_USERNAME=admin
-XDP_AUTH_PASSWORD=xdp
-XDP_API_TOKEN=xdp-dev-token
-```
-
-手动启动 API 时可使用：
-
-```bash
-XDP_AUTH_ENABLED=true \
-XDP_AUTH_USERNAME=admin \
-XDP_AUTH_PASSWORD=xdp \
-XDP_API_TOKEN=change-me \
-go run ./cmd/xdp-api
-```
-
-启用认证后，除以下公开路径外，其它 API 需要 `Authorization: Bearer <token>` 或 `X-API-Token`：
-
-- `/`
-- `/healthz`
-- `/readyz`
-- `/api/v1/auth`
-- `/api/v1/login`
-
 ## 目录结构
 
 ```text
@@ -288,19 +259,3 @@ deployments/docker-compose   本地 Docker Compose 编排
 scripts/                     启动、迁移、验收和演示脚本
 docs/prototypes              HTML 原型图（本地原型目录，不随 GitHub 发布 Markdown 文档）
 ```
-
-## 文档说明
-
-除 `README.md` 外，其它产品需求、测试用例、数据库设计、编码规范和原型说明等 Markdown 文档均作为本地内部资料保留，不随 GitHub 发布。
-
-## 当前状态
-
-最近一次本地验证结果：
-
-- 前端：`npm test` 通过，44 条测试通过。
-- 前端构建：`npm run build` 通过。
-- 后端：`go test ./...` 通过。
-
-## License
-
-当前仓库尚未声明开源许可证。正式发布到 GitHub 前建议补充 `LICENSE` 文件。

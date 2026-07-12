@@ -246,35 +246,6 @@ curl -sS 'http://127.0.0.1:8080/api/v1/search?q=index%3Daudit%20%7C%20stats%20co
   -H 'Authorization: Bearer xdp-dev-token' | python3 -m json.tool
 ```
 
-## Configuration and Authentication
-
-The one-click script enables basic authentication by default:
-
-```text
-XDP_AUTH_ENABLED=true
-XDP_AUTH_USERNAME=admin
-XDP_AUTH_PASSWORD=xdp
-XDP_API_TOKEN=xdp-dev-token
-```
-
-To start the API manually with authentication:
-
-```bash
-XDP_AUTH_ENABLED=true \
-XDP_AUTH_USERNAME=admin \
-XDP_AUTH_PASSWORD=xdp \
-XDP_API_TOKEN=change-me \
-go run ./cmd/xdp-api
-```
-
-When authentication is enabled, all APIs except the following public paths require `Authorization: Bearer <token>` or `X-API-Token`:
-
-- `/`
-- `/healthz`
-- `/readyz`
-- `/api/v1/auth`
-- `/api/v1/login`
-
 ## Project Layout
 
 ```text
@@ -289,18 +260,3 @@ scripts/                     Startup, migration, validation, and demo scripts
 docs/prototypes              Local HTML/SVG prototypes
 ```
 
-## Documentation Notes
-
-Besides `README.md` and `README.zh.md`, additional product requirements, test cases, database design notes, coding standards, and prototype documentation are kept as local internal materials and are not required for the GitHub release package.
-
-## Current Status
-
-Most recent local validation recorded in the Chinese README:
-
-- Frontend: `npm test` passed with 44 tests.
-- Frontend build: `npm run build` passed.
-- Backend: `go test ./...` passed.
-
-## License
-
-This repository does not currently declare an open-source license. Add a `LICENSE` file before publishing if the project should be released under a specific license.
