@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
 COMPOSE=${COMPOSE:-deployments/docker-compose/docker-compose.yaml}
 BASE=${BASE:-http://127.0.0.1:8080}
 AUTH_TOKEN=${AUTH_TOKEN:-xdp-e2e-token-$(date +%s)}
@@ -14,16 +18,32 @@ AGENT_EXPLICIT=${AGENT_EXPLICIT:-}
 AUDIT_SYSLOG_PORT=${AUDIT_SYSLOG_PORT:-15514}
 HOT_SYSLOG_PORT=${HOT_SYSLOG_PORT:-15515}
 CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://127.0.0.1:8123}
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_CACHE_DIR="${GOCACHE:-$ROOT_DIR/.cache/go-build}"
 GO_MOD_CACHE_DIR="${GOMODCACHE:-$ROOT_DIR/.cache/go-mod}"
 GO_PATH_DIR="${GOPATH:-$ROOT_DIR/.cache/go-path}"
 HOST_AGENT_BIN="$ROOT_DIR/build/host-bin/xdp-agent"
 HOST_AGENT_LOG="$ROOT_DIR/.cache/e2e/agent.log"
 E2E_COMPOSE_OVERRIDE="$ROOT_DIR/.cache/e2e/docker-compose.auth.yaml"
+E2E_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/xdp-real-e2e.XXXXXX")"
 HOST_AGENT_PID=""
+TEST_CASE_ID=TC-P1-E2E-001
 export BUILDX_CONFIG="${BUILDX_CONFIG:-$ROOT_DIR/.cache/docker-buildx}"
+export E2E_TMP_DIR
 mkdir -p "$BUILDX_CONFIG"
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 || {
+        printf 'missing required command: %s\n' "$1" >&2
+        exit 4
+    }
+}
+
+require_cmd curl
+require_cmd docker
+require_cmd go
+require_cmd lsof
+require_cmd python3
+require_cmd zip
 
 api_curl() {
     curl --noproxy '*' -fsS "${AUTH_HEADER[@]}" "$@"
@@ -33,8 +53,13 @@ cleanup() {
     if [ -n "$HOST_AGENT_PID" ] && kill -0 "$HOST_AGENT_PID" >/dev/null 2>&1; then
         kill "$HOST_AGENT_PID" >/dev/null 2>&1 || true
     fi
+    rm -rf "$E2E_TMP_DIR"
+}
+on_error() {
+    printf 'FAIL %s real end-to-end acceptance failed\n' "$TEST_CASE_ID" >&2
 }
 trap cleanup EXIT
+trap on_error ERR
 
 find_free_tcp_port() {
     python3 - <<'PY'
@@ -308,29 +333,29 @@ print('plugin catalog ok')
 PY
 
 printf '== verify product api on clickhouse ==\n'
-api_curl "$BASE/api/v1/indexes" | python3 -m json.tool >/tmp/xdp_e2e_indexes.json
+api_curl "$BASE/api/v1/indexes" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_indexes.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_indexes.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_indexes.json')))
 indexes={item.get('index_name') for item in body.get('indexes', [])}
 assert 'app' not in indexes, body
 assert 'firewall' not in indexes, body
 print('indexes api ok', sorted(indexes))
 PY
-api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"audit_e2e","name":"Audit E2E","ttl_days":7,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_index_save.json
-api_curl "$BASE/api/v1/indexes" | python3 -m json.tool >/tmp/xdp_e2e_indexes_after_save.json
+api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"audit_e2e","name":"Audit E2E","ttl_days":7,"status":"active"}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_index_save.json"
+api_curl "$BASE/api/v1/indexes" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_indexes_after_save.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_indexes_after_save.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_indexes_after_save.json')))
 indexes={item.get('index_name') for item in body.get('indexes', [])}
 assert 'audit_e2e' in indexes, body
 print('index save api ok', sorted(indexes))
 PY
-api_curl -X DELETE "$BASE/api/v1/indexes?index=audit_e2e&drop_storage=true" | python3 -m json.tool >/tmp/xdp_e2e_index_delete.json
+api_curl -X DELETE "$BASE/api/v1/indexes?index=audit_e2e&drop_storage=true" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_index_delete.json"
 
 printf '== verify productized syslog parser -> index -> hot fields -> spl stats ==\n'
-api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"audit_p0","ttl_days":30,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_audit_index.json
-cat >/tmp/xdp_e2e_syslog_datasource_payload.json <<JSON
+api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"audit_p0","ttl_days":30,"status":"active"}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_audit_index.json"
+cat >"$E2E_TMP_DIR/xdp_e2e_syslog_datasource_payload.json" <<JSON
 {
   "id":"e2e-syslog-source",
   "name":"E2E Syslog Source",
@@ -344,7 +369,7 @@ cat >/tmp/xdp_e2e_syslog_datasource_payload.json <<JSON
   }
 }
 JSON
-api_curl -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @/tmp/xdp_e2e_syslog_datasource_payload.json | python3 -m json.tool >/tmp/xdp_e2e_syslog_datasource.json
+api_curl -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @"$E2E_TMP_DIR/xdp_e2e_syslog_datasource_payload.json" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_syslog_datasource.json"
 api_curl -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' -d '{
   "id":"pr_e2e_audit_regex",
   "name":"E2E Audit Regex",
@@ -356,10 +381,10 @@ api_curl -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' 
   "sample_event":"src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048",
   "plugin_config":{"regex_pattern":"src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"},
   "props_conf":"[source::E2E Syslog Source]\nEXTRACT-audit = src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)\\s+bytes=(?<bytes>\\d+)"
-}' | python3 -m json.tool >/tmp/xdp_e2e_parse_rule.json
+}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_parse_rule.json"
 python3 - <<'PY'
-import json
-rule=json.load(open('/tmp/xdp_e2e_parse_rule.json'))
+import json, os
+rule=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_parse_rule.json')))
 fields={item.get('name'): item for item in rule.get('hot_fields', [])}
 assert rule.get('output_index') == 'audit_p0', rule
 assert {'src_ip','dst_ip','action','bytes'} <= set(fields), rule
@@ -461,10 +486,10 @@ for attempt in range(120):
 else:
     raise SystemExit('audit_p0 test rows not complete')
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 src="10.0.1.8"' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_audit_search.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 src="10.0.1.8"' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_audit_search.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_audit_search.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_audit_search.json')))
 assert body.get('mode') == 'events', body
 assert body.get('pagination', {}).get('returned') >= 1, body
 event=body['events'][0]
@@ -472,26 +497,26 @@ assert event.get('metadata', {}).get('index') == 'audit_p0', event
 assert event.get('fields', {}).get('src_ip') == '10.0.1.8', event
 print('spl field search ok', event['fields']['src_ip'])
 PY
-api_curl "$BASE/api/v1/search/fields?q=index%3Daudit_p0&limit=100" | python3 -m json.tool >/tmp/xdp_e2e_fields.json
+api_curl "$BASE/api/v1/search/fields?q=index%3Daudit_p0&limit=100" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_fields.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_fields.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_fields.json')))
 fields={item.get('name') for item in body.get('fields', [])}
 assert {'src_ip','dst_ip','action','bytes'} <= fields, body
 print('fields api ok', sorted(fields))
 PY
-api_curl --get "$BASE/api/v1/search/timeline" --data-urlencode 'q=index=audit_p0' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'interval=minute' | python3 -m json.tool >/tmp/xdp_e2e_timeline.json
+api_curl --get "$BASE/api/v1/search/timeline" --data-urlencode 'q=index=audit_p0' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'interval=minute' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_timeline.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_timeline.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_timeline.json')))
 assert body.get('buckets'), body
 assert sum(int(item.get('count') or 0) for item in body['buckets']) >= 1, body
 print('timeline api ok', body['interval'], len(body['buckets']))
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | stats count as total sum(bytes) as total_bytes avg(bytes) as avg_bytes by src action' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_audit_stats.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | stats count as total sum(bytes) as total_bytes avg(bytes) as avg_bytes by src action' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_audit_stats.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_audit_stats.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_audit_stats.json')))
 assert body.get('mode') == 'stats', body
 rows=body.get('stats', {}).get('rows', [])
 assert rows, body
@@ -506,10 +531,10 @@ print('spl stats ok', row)
 PY
 
 printf '== verify P1 search command plugins table/sort/head/dedup ==\n'
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | table _time src_ip action bytes | sort - bytes | head 2' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_p1_table_sort_head.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | table _time src_ip action bytes | sort - bytes | head 2' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_p1_table_sort_head.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_p1_table_sort_head.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_p1_table_sort_head.json')))
 assert body.get('mode') == 'table', body
 assert body.get('search_command', {}).get('plugin_code') == 'table', body
 assert body.get('search_command', {}).get('plugin_type') == 'search_command', body
@@ -521,10 +546,10 @@ assert int(rows[0].get('bytes')) >= int(rows[1].get('bytes')), rows
 assert rows[0].get('src_ip') == '10.0.1.8', rows
 print('p1 table/sort/head ok', rows[:2])
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | sort - bytes | dedup src_ip action | table src_ip action bytes' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_p1_dedup.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | sort - bytes | dedup src_ip action | table src_ip action bytes' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_p1_dedup.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_p1_dedup.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_p1_dedup.json')))
 assert body.get('mode') == 'table', body
 table=body.get('table', {})
 assert table.get('fields') == ['src_ip','action','bytes'], table
@@ -535,10 +560,10 @@ row_108=next(row for row in rows if row.get('src_ip') == '10.0.1.8' and row.get(
 assert int(row_108.get('bytes')) == 4096, rows
 print('p1 dedup ok', rows)
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | stats count as total sum(bytes) as total_bytes by src action | sort - total_bytes | head 1 | table src action total_bytes' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_p1_stats_pipe.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | stats count as total sum(bytes) as total_bytes by src action | sort - total_bytes | head 1 | table src action total_bytes' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_p1_stats_pipe.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_p1_stats_pipe.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_p1_stats_pipe.json')))
 assert body.get('mode') == 'table', body
 table=body.get('table', {})
 assert table.get('fields') == ['src','action','total_bytes'], table
@@ -581,10 +606,10 @@ for _ in range(90):
 else:
     raise SystemExit('api not ready after restart')
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | table src action bytes | sort - bytes | head 10' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_p1_restart_recovery.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=audit_p0 | table src action bytes | sort - bytes | head 10' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_p1_restart_recovery.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_p1_restart_recovery.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_p1_restart_recovery.json')))
 assert body.get('mode') == 'table', body
 assert body.get('search_command', {}).get('plugin_code') == 'table', body
 table=body.get('table', {})
@@ -599,8 +624,8 @@ PY
 
 printf '== verify P1 kafka input plugin + json parser plugin end-to-end ==\n'
 docker compose -f "$COMPOSE" exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic xdp.e2e.json --partitions 1 --replication-factor 1 >/dev/null
-api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"json_p1","ttl_days":30,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_json_index.json
-cat >/tmp/xdp_e2e_kafka_datasource_payload.json <<JSON
+api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"json_p1","ttl_days":30,"status":"active"}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_json_index.json"
+cat >"$E2E_TMP_DIR/xdp_e2e_kafka_datasource_payload.json" <<JSON
 {
   "id":"e2e-kafka-json-source",
   "name":"E2E Kafka JSON Source",
@@ -617,10 +642,10 @@ cat >/tmp/xdp_e2e_kafka_datasource_payload.json <<JSON
   }
 }
 JSON
-api_curl -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @/tmp/xdp_e2e_kafka_datasource_payload.json | python3 -m json.tool >/tmp/xdp_e2e_kafka_datasource.json
+api_curl -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @"$E2E_TMP_DIR/xdp_e2e_kafka_datasource_payload.json" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_kafka_datasource.json"
 python3 - <<'PY'
-import json
-source=json.load(open('/tmp/xdp_e2e_kafka_datasource.json'))
+import json, os
+source=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_kafka_datasource.json')))
 assert source.get('plugin_code') == 'kafka', source
 assert source.get('internal_raw_topic') == 'raw.ds_e2e_kafka_json_source', source
 assert source.get('runtime_status') == 'running', source
@@ -638,10 +663,10 @@ api_curl -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' 
   "sample_event":"{\"level\":\"warn\",\"service\":\"checkout\",\"user\":{\"id\":\"u-1\",\"geo\":{\"country\":\"CN\"}},\"latency\":128}",
   "plugin_config":{"source_field":"raw","target":"fields","flatten_nested":true,"flatten_separator":".","array_mode":"json_string","on_invalid_json":"continue"},
   "props_conf":"[source::E2E Kafka JSON Source]\nINDEXED_EXTRACTIONS = json\nKV_MODE = none"
-}' | python3 -m json.tool >/tmp/xdp_e2e_json_parse_rule.json
+}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_json_parse_rule.json"
 python3 - <<'PY'
-import json
-rule=json.load(open('/tmp/xdp_e2e_json_parse_rule.json'))
+import json, os
+rule=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_json_parse_rule.json')))
 assert rule.get('parser_plugin') == 'json-parser', rule
 assert rule.get('parser_plugin_version') == '1.1.0', rule
 assert rule.get('output_index') == 'json_p1', rule
@@ -723,10 +748,10 @@ for _ in range(90):
 else:
     raise SystemExit('json_p1 parsed rows not found')
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=json_p1 service=checkout parse_status=parsed' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_json_search.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=json_p1 service=checkout parse_status=parsed' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_json_search.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_json_search.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_json_search.json')))
 assert body.get('mode') == 'events', body
 assert body.get('pagination', {}).get('total') >= 2, body
 event=body['events'][0]
@@ -734,10 +759,10 @@ assert event.get('metadata', {}).get('parse_status') == 'parsed', event
 assert event.get('fields', {}).get('service') == 'checkout', event
 print('json field search ok', body.get('pagination', {}).get('total'))
 PY
-api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=json_p1 | stats count by level service | sort level service | table level service count' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >/tmp/xdp_e2e_json_stats.json
+api_curl --get "$BASE/api/v1/search" --data-urlencode 'q=index=json_p1 | stats count by level service | sort level service | table level service count' --data-urlencode 'earliest=-1h' --data-urlencode 'latest=now' --data-urlencode 'limit=10' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_json_stats.json"
 python3 - <<'PY'
-import json
-body=json.load(open('/tmp/xdp_e2e_json_stats.json'))
+import json, os
+body=json.load(open(os.path.join(os.environ['E2E_TMP_DIR'], 'xdp_e2e_json_stats.json')))
 assert body.get('mode') == 'table', body
 rows=body.get('table', {}).get('rows', [])
 assert rows, body
@@ -776,8 +801,8 @@ for ptype, code in [('input','syslog'), ('parser','regex'), ('search_command','s
 PY
 
 printf '== verify datasource persistence and worker hot reload ==\n'
-api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"hotreload","ttl_days":30,"status":"active"}' | python3 -m json.tool >/tmp/xdp_e2e_hotreload_index.json
-cat >/tmp/xdp_e2e_hot_datasource_payload.json <<JSON
+api_curl -X POST "$BASE/api/v1/indexes" -H 'Content-Type: application/json' -d '{"index_name":"hotreload","ttl_days":30,"status":"active"}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_hotreload_index.json"
+cat >"$E2E_TMP_DIR/xdp_e2e_hot_datasource_payload.json" <<JSON
 {
   "id":"e2e-hot-syslog-source",
   "name":"E2E Hot Syslog Source",
@@ -791,7 +816,7 @@ cat >/tmp/xdp_e2e_hot_datasource_payload.json <<JSON
   }
 }
 JSON
-api_curl -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @/tmp/xdp_e2e_hot_datasource_payload.json | python3 -m json.tool >/tmp/xdp_e2e_datasource_save.json
+api_curl -X POST "$BASE/api/v1/datasources" -H 'Content-Type: application/json' -d @"$E2E_TMP_DIR/xdp_e2e_hot_datasource_payload.json" | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_datasource_save.json"
 api_curl -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' -d '{
   "id":"pr_e2e_hot_regex",
   "name":"E2E Hot Regex",
@@ -803,7 +828,7 @@ api_curl -X POST "$BASE/api/v1/parse-rules" -H 'Content-Type: application/json' 
   "sample_event":"service=e2e-hot bytes=64",
   "plugin_config":{"regex_pattern":"service=(?<service>\\S+)\\s+bytes=(?<bytes>\\d+)"},
   "props_conf":"[source::E2E Hot Syslog Source]\nEXTRACT-hot = service=(?<service>\\S+)\\s+bytes=(?<bytes>\\d+)"
-}' | python3 -m json.tool >/tmp/xdp_e2e_hot_parse_rule.json
+}' | python3 -m json.tool >"$E2E_TMP_DIR/xdp_e2e_hot_parse_rule.json"
 sleep 4
 HOT_SYSLOG_PORT="$HOT_SYSLOG_PORT" python3 - <<'PY'
 import base64, os, socket, time, urllib.error, urllib.request
@@ -845,4 +870,4 @@ PY
 
 printf '== api metrics ==\n'
 api_curl "$BASE/metrics" | grep -E 'xdp_ingest_events_total|xdp_deadletter_events_total' || true
-printf 'Real end-to-end acceptance passed.\n'
+printf 'PASS %s real end-to-end acceptance passed\n' "$TEST_CASE_ID"

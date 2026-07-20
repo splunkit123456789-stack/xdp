@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://127.0.0.1:8123}
+CLICKHOUSE_USER=${CLICKHOUSE_USER:-}
+CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+MIGRATIONS_DIR=${MIGRATIONS_DIR:-$ROOT/migrations/clickhouse}
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'missing required command: python3\n' >&2
+    exit 4
+fi
+
+export CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD MIGRATIONS_DIR
+
 python3 - <<'PY'
 from pathlib import Path
 import os
@@ -9,6 +22,7 @@ import base64
 url = os.environ.get('CLICKHOUSE_URL', 'http://127.0.0.1:8123') + '/'
 user = os.environ.get('CLICKHOUSE_USER', '')
 password = os.environ.get('CLICKHOUSE_PASSWORD', '')
+migrations_dir = Path(os.environ['MIGRATIONS_DIR'])
 
 def execute(stmt):
     req = urllib.request.Request(url, data=stmt.encode(), method='POST')
@@ -18,7 +32,7 @@ def execute(stmt):
     with urllib.request.urlopen(req, timeout=10) as resp:
         return resp.read().decode()
 
-for path in sorted(Path('migrations/clickhouse').glob('*.sql')):
+for path in sorted(migrations_dir.glob('*.sql')):
     sql = path.read_text()
     for stmt in [s.strip() for s in sql.split(';') if s.strip()]:
         execute(stmt)

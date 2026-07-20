@@ -20,7 +20,7 @@ func TestRuntimeSchemaIncludesAuthTables(t *testing.T) {
 		"KEY idx_auth_audit_username_type",
 	}
 	for _, want := range required {
-		if !strings.Contains(schema, want) {
+		if !strings.Contains(schema+" "+compatibilitySchema, want) {
 			t.Fatalf("runtime schema missing %q", want)
 		}
 	}
@@ -29,10 +29,14 @@ func TestRuntimeSchemaIncludesAuthTables(t *testing.T) {
 func TestRuntimeSchemaIncludesParseRuleOutputIndex(t *testing.T) {
 	required := []string{
 		"output_index VARCHAR(128) NOT NULL DEFAULT 'app'",
+		"data_source_id VARCHAR(128) NULL",
+		"pipeline_id VARCHAR(128) NULL",
+		"ALTER TABLE parse_rules MODIFY COLUMN data_source_id VARCHAR(128) NULL",
 		"KEY idx_parse_rules_output_index_status (output_index, status)",
+		"ALTER TABLE parse_rules MODIFY COLUMN pipeline_id VARCHAR(128) NULL",
 	}
 	for _, want := range required {
-		if !strings.Contains(schema, want) {
+		if !strings.Contains(schema+" "+compatibilitySchema, want) {
 			t.Fatalf("runtime schema missing %q", want)
 		}
 	}
@@ -45,6 +49,21 @@ func TestRuntimeSchemaIncludesDataSourceNameUniqueness(t *testing.T) {
 	}
 	for _, want := range required {
 		if !strings.Contains(schema, want) {
+			t.Fatalf("runtime schema missing %q", want)
+		}
+	}
+}
+
+func TestRuntimeSchemaIncludesDataSourceRuntimePipelineIDLength(t *testing.T) {
+	required := []string{
+		"CREATE TABLE IF NOT EXISTS data_source_runtime_states",
+		"data_source_id VARCHAR(128) NOT NULL",
+		"pipeline_id VARCHAR(128) NULL",
+		"ALTER TABLE data_source_runtime_states MODIFY COLUMN data_source_id VARCHAR(128) NOT NULL",
+		"ALTER TABLE data_source_runtime_states MODIFY COLUMN pipeline_id VARCHAR(128) NULL",
+	}
+	for _, want := range required {
+		if !strings.Contains(schema+" "+compatibilitySchema, want) {
 			t.Fatalf("runtime schema missing %q", want)
 		}
 	}
@@ -166,14 +185,19 @@ func TestMigrationFileIncludesAuthTables(t *testing.T) {
 		"token_hash VARCHAR(255) NOT NULL",
 		"CREATE TABLE auth_audit_logs",
 		"output_index VARCHAR(128) NOT NULL DEFAULT 'app'",
+		"pipeline_id VARCHAR(128) NULL",
 		"KEY idx_parse_rules_output_index_status (output_index, status)",
 		"active_name VARCHAR(255) GENERATED ALWAYS AS (CASE WHEN deleted_at IS NULL THEN name ELSE NULL END) STORED",
 		"UNIQUE KEY uk_data_sources_active_name (active_name)",
+		"data_source_id VARCHAR(128) NULL",
 		"CREATE TABLE saved_searches",
 		"KEY idx_saved_searches_status_time (status, updated_at DESC)",
 		"CREATE TABLE index_storage_snapshots",
 		"row_count BIGINT NOT NULL DEFAULT 0",
 		"KEY idx_index_storage_snapshots_name_time (index_name, captured_at)",
+		"CREATE TABLE data_source_runtime_states",
+		"data_source_id VARCHAR(128) NOT NULL",
+		"pipeline_id VARCHAR(128) NULL",
 	}
 	for _, want := range required {
 		if !strings.Contains(migration, want) {

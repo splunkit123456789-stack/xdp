@@ -4,6 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 4
+  }
+}
+
+require_cmd docker
+require_cmd go
+require_cmd curl
+require_cmd grep
+
+TEST_CASE_ID=TC-SCRIPT-DOCKER-TZ-001
 CACHE_DIR="${XDP_TEST_CACHE_DIR:-.cache/xdp-tests}"
 GO_CACHE_DIR="${GOCACHE:-$ROOT_DIR/$CACHE_DIR/go-build}"
 GO_PATH_DIR="${XDP_TEST_GOPATH:-$ROOT_DIR/$CACHE_DIR/go-path}"
@@ -40,18 +53,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+fail() {
+  printf 'FAIL %s %s\n' "$TEST_CASE_ID" "$1" >&2
+  exit 1
+}
+
 for _ in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then
-    printf 'docker timezone smoke test passed\n'
+    printf 'PASS %s docker timezone smoke test passed\n' "$TEST_CASE_ID"
     exit 0
   fi
   if ! docker ps -q --no-trunc | grep -F "$container_id" >/dev/null; then
     docker logs "$container_id" >&2 || true
-    exit 1
+    fail 'xdp-api container exited before health check passed'
   fi
   sleep 1
 done
 
 docker logs "$container_id" >&2 || true
 printf 'xdp-api did not become healthy in alpine\n' >&2
-exit 1
+fail 'xdp-api did not become healthy in alpine'

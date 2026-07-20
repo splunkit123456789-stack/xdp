@@ -267,6 +267,7 @@ func (m *syslogListenerManager) reconcile(ctx context.Context, desired map[strin
 }
 
 func (m *syslogListenerManager) run(ctx context.Context, spec syslogSpec) {
+	defer m.forgetListener(spec.ID, spec)
 	factory, _, err := m.reg.Get(plugin.TypeInput, "syslog", "1.0.0")
 	if err != nil {
 		slog.Warn("syslog listener plugin unavailable", "datasource", spec.ID, "error", err)
@@ -295,6 +296,15 @@ func (m *syslogListenerManager) run(ctx context.Context, spec syslogSpec) {
 	slog.Info("syslog listener started", "datasource", spec.ID, "addr", spec.Addr, "topic", spec.Topic)
 	if err := input.Start(ctx, emit); err != nil {
 		slog.Warn("syslog listener stopped", "datasource", spec.ID, "error", err)
+	}
+}
+
+func (m *syslogListenerManager) forgetListener(id string, spec syslogSpec) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.running[id]
+	if ok && current.spec == spec {
+		delete(m.running, id)
 	}
 }
 

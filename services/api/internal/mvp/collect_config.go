@@ -50,6 +50,7 @@ type dataSourceConnectivityCheckRequest struct {
 }
 
 func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
+	principal := h.currentPrincipal(r.Context())
 	counts := map[string]int{}
 	h.mu.RLock()
 	for _, source := range h.dataSources {
@@ -62,8 +63,9 @@ func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.mu.RUnlock()
-	plugins := []InputPlugin{
-		{
+	plugins := []InputPlugin{}
+	if principal.AllowsPlugin("use", "input", "syslog") {
+		plugins = append(plugins, InputPlugin{
 			Code:            "syslog",
 			Name:            "Syslog",
 			Description:     "通过 UDP 监听接收 Syslog 日志，P0 支持保存并热加载到运行时。",
@@ -81,15 +83,15 @@ func (h *Handler) listInputPlugins(w http.ResponseWriter, r *http.Request) {
 				"hot_reload":     true,
 				"protocols":      []string{"UDP"},
 			},
-		},
+		})
 	}
-	for _, plugin := range h.enabledImportedInputPlugins(r.Context(), counts) {
+	for _, plugin := range h.enabledImportedInputPlugins(r.Context(), principal, counts) {
 		plugins = append(plugins, plugin)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
 }
 
-func (h *Handler) enabledImportedInputPlugins(ctx context.Context, counts map[string]int) []InputPlugin {
+func (h *Handler) enabledImportedInputPlugins(ctx context.Context, principal AuthenticatedPrincipal, counts map[string]int) []InputPlugin {
 	items := []PluginImportResponse{}
 	if h.mysql != nil {
 		if records, err := h.mysql.ListPluginRecords(ctx); err == nil {
@@ -107,7 +109,7 @@ func (h *Handler) enabledImportedInputPlugins(ctx context.Context, counts map[st
 	items = deduplicatePluginResponses(items)
 	out := make([]InputPlugin, 0, len(items))
 	for _, item := range items {
-		if productVisibleBuiltinPlugin(item.PluginType, item.PluginCode) || !isPluginEnabled(item.Status) {
+		if productVisibleBuiltinPlugin(item.PluginType, item.PluginCode) || !isPluginEnabled(item.Status) || !principal.AllowsPlugin("use", item.PluginType, item.PluginCode) {
 			continue
 		}
 		out = append(out, inputPluginFromImport(item, counts[item.PluginCode]))
@@ -404,6 +406,7 @@ func (h *Handler) deleteDataSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) saveCollectDataSource(w http.ResponseWriter, r *http.Request, source DataSource, pathID string) {
+	principal := h.currentPrincipal(r.Context())
 	if apiErr := h.validateCollectDataSourcePayload(source); apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
 		return
@@ -411,6 +414,9 @@ func (h *Handler) saveCollectDataSource(w http.ResponseWriter, r *http.Request, 
 	normalized, apiErr := h.normalizeCollectDataSource(source, pathID)
 	if apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
+		return
+	}
+	if !h.authorizePluginScope(w, r, principal, "use", "input", collectPluginCode(normalized)) {
 		return
 	}
 	if h.collectDataSourceNameExists(r.Context(), normalized.Name, normalized.ID) {

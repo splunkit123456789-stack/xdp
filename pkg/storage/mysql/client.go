@@ -342,7 +342,13 @@ func (c *Client) SetPluginStatus(ctx context.Context, pluginType string, pluginC
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return PluginRecord{}, sql.ErrNoRows
+		var matched int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_versions pv JOIN plugins p ON pv.plugin_id = p.id WHERE p.type = ? AND p.code = ?`, pluginType, pluginCode).Scan(&matched); err != nil {
+			return PluginRecord{}, err
+		}
+		if matched == 0 {
+			return PluginRecord{}, sql.ErrNoRows
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE plugins SET status = ? WHERE type = ? AND code = ?`, status, pluginType, pluginCode); err != nil {
 		return PluginRecord{}, err
@@ -1084,6 +1090,114 @@ CREATE TABLE IF NOT EXISTS auth_audit_logs (
     KEY idx_auth_audit_created_at (created_at),
     KEY idx_auth_audit_username_type (username, event_type)
 );
+CREATE TABLE IF NOT EXISTS auth_roles (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    role_code VARCHAR(128) NOT NULL,
+    role_name VARCHAR(255) NOT NULL,
+    description TEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    builtin TINYINT(1) NOT NULL DEFAULT 0,
+    metadata JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    deleted_at DATETIME(3) NULL,
+    UNIQUE KEY uk_auth_roles_code (role_code)
+);
+CREATE TABLE IF NOT EXISTS auth_permissions (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    permission_code VARCHAR(128) NOT NULL,
+    resource_code VARCHAR(128) NOT NULL,
+    action_code VARCHAR(128) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    description TEXT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    builtin TINYINT(1) NOT NULL DEFAULT 0,
+    metadata JSON NOT NULL DEFAULT (JSON_OBJECT()),
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_permissions_code (permission_code),
+    KEY idx_auth_permissions_resource_action (resource_code, action_code)
+);
+CREATE TABLE IF NOT EXISTS auth_role_permissions (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    role_id CHAR(36) NOT NULL,
+    permission_id CHAR(36) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_role_permissions (role_id, permission_id),
+    KEY idx_auth_role_permissions_permission (permission_id),
+    CONSTRAINT fk_auth_role_permissions_role FOREIGN KEY (role_id) REFERENCES auth_roles(id),
+    CONSTRAINT fk_auth_role_permissions_permission FOREIGN KEY (permission_id) REFERENCES auth_permissions(id)
+);
+CREATE TABLE IF NOT EXISTS auth_user_roles (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    role_id CHAR(36) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_user_roles (user_id, role_id),
+    KEY idx_auth_user_roles_role (role_id),
+    CONSTRAINT fk_auth_user_roles_user FOREIGN KEY (user_id) REFERENCES auth_users(id),
+    CONSTRAINT fk_auth_user_roles_role FOREIGN KEY (role_id) REFERENCES auth_roles(id)
+);
+CREATE TABLE IF NOT EXISTS auth_token_permissions (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    token_id CHAR(36) NOT NULL,
+    permission_id CHAR(36) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_token_permissions (token_id, permission_id),
+    KEY idx_auth_token_permissions_permission (permission_id),
+    CONSTRAINT fk_auth_token_permissions_token FOREIGN KEY (token_id) REFERENCES auth_tokens(id),
+    CONSTRAINT fk_auth_token_permissions_permission FOREIGN KEY (permission_id) REFERENCES auth_permissions(id)
+);
+CREATE TABLE IF NOT EXISTS auth_role_index_scopes (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    role_id CHAR(36) NOT NULL,
+    scope_action VARCHAR(32) NOT NULL,
+    index_pattern VARCHAR(128) NOT NULL,
+    created_by CHAR(36) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_role_index_scopes (role_id, scope_action, index_pattern),
+    KEY idx_auth_role_index_scopes_action_pattern (scope_action, index_pattern),
+    CONSTRAINT fk_auth_role_index_scopes_role FOREIGN KEY (role_id) REFERENCES auth_roles(id),
+    CONSTRAINT fk_auth_role_index_scopes_created_by FOREIGN KEY (created_by) REFERENCES auth_users(id)
+);
+CREATE TABLE IF NOT EXISTS auth_token_index_scopes (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    token_id CHAR(36) NOT NULL,
+    scope_action VARCHAR(32) NOT NULL,
+    index_pattern VARCHAR(128) NOT NULL,
+    created_by CHAR(36) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_token_index_scopes (token_id, scope_action, index_pattern),
+    KEY idx_auth_token_index_scopes_action_pattern (scope_action, index_pattern),
+    CONSTRAINT fk_auth_token_index_scopes_token FOREIGN KEY (token_id) REFERENCES auth_tokens(id),
+    CONSTRAINT fk_auth_token_index_scopes_created_by FOREIGN KEY (created_by) REFERENCES auth_users(id)
+);
+CREATE TABLE IF NOT EXISTS auth_role_plugin_scopes (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    role_id CHAR(36) NOT NULL,
+    scope_action VARCHAR(32) NOT NULL,
+    plugin_type VARCHAR(32) NOT NULL,
+    plugin_code VARCHAR(128) NOT NULL,
+    created_by CHAR(36) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_role_plugin_scopes (role_id, scope_action, plugin_type, plugin_code),
+    KEY idx_auth_role_plugin_scopes_action_type_code (scope_action, plugin_type, plugin_code),
+    CONSTRAINT fk_auth_role_plugin_scopes_role FOREIGN KEY (role_id) REFERENCES auth_roles(id),
+    CONSTRAINT fk_auth_role_plugin_scopes_created_by FOREIGN KEY (created_by) REFERENCES auth_users(id)
+);
+CREATE TABLE IF NOT EXISTS auth_token_plugin_scopes (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    token_id CHAR(36) NOT NULL,
+    scope_action VARCHAR(32) NOT NULL,
+    plugin_type VARCHAR(32) NOT NULL,
+    plugin_code VARCHAR(128) NOT NULL,
+    created_by CHAR(36) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_auth_token_plugin_scopes (token_id, scope_action, plugin_type, plugin_code),
+    KEY idx_auth_token_plugin_scopes_action_type_code (scope_action, plugin_type, plugin_code),
+    CONSTRAINT fk_auth_token_plugin_scopes_token FOREIGN KEY (token_id) REFERENCES auth_tokens(id),
+    CONSTRAINT fk_auth_token_plugin_scopes_created_by FOREIGN KEY (created_by) REFERENCES auth_users(id)
+);
 CREATE TABLE IF NOT EXISTS plugins (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     type VARCHAR(64) NOT NULL,
@@ -1221,7 +1335,7 @@ CREATE TABLE IF NOT EXISTS parse_rules (
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     parser_plugin VARCHAR(128) NOT NULL,
     parser_plugin_version VARCHAR(64) NOT NULL DEFAULT '1.0.0',
-    data_source_id CHAR(36) NULL,
+    data_source_id VARCHAR(128) NULL,
     data_source_name VARCHAR(255) NULL,
     input_route VARCHAR(255) NOT NULL DEFAULT 'internal_raw_topic',
     output_index VARCHAR(128) NOT NULL DEFAULT 'app',
@@ -1235,7 +1349,7 @@ CREATE TABLE IF NOT EXISTS parse_rules (
     preview_result JSON NOT NULL DEFAULT (JSON_ARRAY()),
     validation_result JSON NOT NULL DEFAULT (JSON_OBJECT()),
     hot_fields JSON NOT NULL DEFAULT (JSON_ARRAY()),
-    pipeline_id CHAR(36) NULL,
+    pipeline_id VARCHAR(128) NULL,
     last_published_at DATETIME(3) NULL,
     last_error TEXT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -1265,7 +1379,7 @@ CREATE TABLE IF NOT EXISTS data_sources (
 );
 CREATE TABLE IF NOT EXISTS data_source_runtime_states (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-    data_source_id CHAR(36) NOT NULL,
+    data_source_id VARCHAR(128) NOT NULL,
     data_source_code VARCHAR(128) NOT NULL,
     agent_id VARCHAR(128) NOT NULL DEFAULT 'local-agent',
     plugin_code VARCHAR(128) NOT NULL,
@@ -1276,7 +1390,7 @@ CREATE TABLE IF NOT EXISTS data_source_runtime_states (
     listen_host VARCHAR(128) NULL,
     listen_port INT NULL,
     endpoint VARCHAR(255) NULL,
-    pipeline_id CHAR(36) NULL,
+    pipeline_id VARCHAR(128) NULL,
     config_version BIGINT NOT NULL DEFAULT 1,
     last_loaded_at DATETIME(3) NULL,
     last_transition_at DATETIME(3) NULL,
@@ -1407,7 +1521,30 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'parse_rules' AND column_name = 'hot_fields') THEN
         ALTER TABLE parse_rules ADD COLUMN hot_fields JSON NOT NULL DEFAULT (JSON_ARRAY()) AFTER validation_result;
     END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'parse_rules')
+       AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'parse_rules' AND column_name = 'pipeline_id' AND data_type = 'char') THEN
+        ALTER TABLE parse_rules MODIFY COLUMN pipeline_id VARCHAR(128) NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'parse_rules')
+       AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'parse_rules' AND column_name = 'data_source_id' AND data_type = 'char') THEN
+        ALTER TABLE parse_rules MODIFY COLUMN data_source_id VARCHAR(128) NULL;
+    END IF;
 END;
 CALL xdp_ensure_parse_rules_compat();
 DROP PROCEDURE IF EXISTS xdp_ensure_parse_rules_compat;
+
+DROP PROCEDURE IF EXISTS xdp_ensure_data_source_runtime_states_compat;
+CREATE PROCEDURE xdp_ensure_data_source_runtime_states_compat()
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'data_source_runtime_states')
+       AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'data_source_runtime_states' AND column_name = 'pipeline_id' AND data_type = 'char') THEN
+        ALTER TABLE data_source_runtime_states MODIFY COLUMN pipeline_id VARCHAR(128) NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'data_source_runtime_states')
+       AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'data_source_runtime_states' AND column_name = 'data_source_id' AND data_type = 'char') THEN
+        ALTER TABLE data_source_runtime_states MODIFY COLUMN data_source_id VARCHAR(128) NOT NULL;
+    END IF;
+END;
+CALL xdp_ensure_data_source_runtime_states_compat();
+DROP PROCEDURE IF EXISTS xdp_ensure_data_source_runtime_states_compat;
 `

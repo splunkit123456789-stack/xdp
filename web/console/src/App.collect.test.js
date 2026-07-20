@@ -195,6 +195,7 @@ describe("XDP collection config API integration", () => {
 
     const collectPage = wrapper.get('[data-testid="collect-page"]');
     expect(collectPage.text()).toContain("监听端口");
+    expect(collectPage.get(".collect-table").classes()).toContain("align-left-table");
     expect(wrapper.get('[data-testid="collect-row-firewall-syslog"]').text()).toContain("UDP:5514");
   });
 
@@ -217,6 +218,13 @@ describe("XDP collection config API integration", () => {
     await wrapper.get('[data-testid="show-input-form"]').trigger("click");
     await flushPromises();
 
+    expect(wrapper.get('[data-testid="input-form-card"]').text()).toContain("新增采集");
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="input-form-card"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="show-input-form"]').trigger("click");
+    await flushPromises();
     expect(wrapper.get('[data-testid="input-form-card"]').text()).toContain("新增采集");
     await wrapper.get('[data-testid="cancel-input-form"]').trigger("click");
     await flushPromises();

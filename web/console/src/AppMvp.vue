@@ -38,409 +38,38 @@
       <header class="topbar console-topbar">
         <div class="brand"><span class="brand-mark console-brand-mark">X</span><span>XDP&gt;Console</span></div>
         <nav data-testid="main-nav" class="topbar-nav" aria-label="主模块导航">
-          <button v-for="item in modules" :key="item.key" :class="{ active: currentModule === item.key }" :data-testid="`nav-${item.key}`" type="button" @click="selectModule(item.key)">{{ item.label }}</button>
+          <template v-for="item in modules" :key="item.key">
+            <RouterLink v-if="router" :to="{ name: item.key }" custom v-slot="{ navigate, isActive }">
+              <button :class="{ active: isActive || currentModule === item.key }" :data-testid="`nav-${item.key}`" type="button" @click="selectModule(item.key, navigate)">{{ item.label }}</button>
+            </RouterLink>
+            <button v-else :class="{ active: currentModule === item.key }" :data-testid="`nav-${item.key}`" type="button" @click="selectModule(item.key)">{{ item.label }}</button>
+          </template>
         </nav>
-        <div class="user">Administrator</div>
+        <div class="user">{{ currentUserLabel }}</div>
         <button data-testid="logout" class="logout" type="button" @click="logout">退出</button>
       </header>
 
       <section class="workspace">
         <section class="main-panel">
-          <section v-if="currentModule === 'collect'" data-testid="collect-page" class="tab-panel">
-            <div class="panel-header"><h2><span class="page-icon page-icon-collect">IN</span>采集配置</h2><div class="panel-header-actions"><span class="badge">{{ inputPluginBadge }}</span><button data-testid="show-input-form" class="btn" type="button" @click="openInputForm">新增采集</button></div></div>
-            <p v-if="inputFormNotice" data-testid="input-form-notice" class="status-line">{{ inputFormNotice }}</p>
-            <div v-if="pluginCatalogErrors.input" data-testid="input-plugin-catalog-error" class="catalog-load-error">
-              <span>{{ pluginCatalogErrors.input }}</span>
-              <button data-testid="retry-input-plugin-catalog" class="btn ghost" type="button" :disabled="pluginCatalogLoading.input" @click="retryInputPluginCatalog">
-                {{ pluginCatalogLoading.input ? "加载中" : "重试" }}
-              </button>
-            </div>
-            <div class="content-grid" :class="{ 'list-first': !showInputForm }">
-              <article v-if="showInputForm" data-testid="input-form-card" class="card config-drawer" aria-label="采集配置表单">
-                <div class="card-head"><span>{{ editingInputId ? "修改采集" : "新增采集" }}</span><button class="btn ghost" type="button" @click="clearInputForm">清空</button></div>
-                <form class="form-grid" @submit.prevent="saveInput">
-                  <label>设备名称<input v-model="inputForm.name" class="field" required placeholder="请输入设备名称" /><span v-if="inputNameError" data-testid="input-name-error" class="field-error">{{ inputNameError }}</span></label>
-                  <label>状态<select v-model="inputForm.status" class="select" required><option>active</option><option>disabled</option></select></label>
-                  <div class="plugin-grid">
-                    <button data-testid="input-plugin-syslog" :disabled="Boolean(editingInputId)" :class="{ active: inputForm.plugin === 'Syslog', locked: Boolean(editingInputId) }" class="plugin-card" type="button" @click="selectInputPlugin('Syslog')"><span class="plugin-icon icon-syslog">SYS</span>Syslog</button>
-                    <button v-if="kafkaInputPlugin" data-testid="input-plugin-kafka" :disabled="Boolean(editingInputId)" :class="{ active: inputForm.plugin === 'Kafka', locked: Boolean(editingInputId) }" class="plugin-card" type="button" @click="selectInputPlugin('Kafka')"><span class="plugin-icon icon-kafka">K</span>Kafka</button>
-                  </div>
-
-                  <div v-if="inputForm.plugin === 'Syslog'" class="param-panel">
-                    <div class="two">
-                      <label>监听端口<input v-model="inputForm.collectorPort" class="field" required placeholder="5514" /><span v-if="inputPortError" data-testid="collector-port-error" class="field-error">{{ inputPortError }}</span></label>
-                      <label>日志筛选<select v-model="inputForm.logFilterEnabled" class="select" required><option value="off">关闭</option><option value="on">开启</option></select></label>
-                    </div>
-                    <div class="two">
-                      <label>传输层协议<select v-model="inputForm.transportProtocol" class="select" required><option>UDP</option></select></label>
-                      <label>字符编码<select v-model="inputForm.encoding" class="select" required><option>UTF-8</option><option>GBK</option><option>ISO-8859-1</option></select></label>
-                    </div>
-                    <div v-if="inputForm.logFilterEnabled === 'on'" class="conditional-panel">
-                      <label>正则筛选<input v-model="inputForm.logFilterRegex" class="field" required placeholder="^allow|^accept" /></label>
-                      <div class="note">开启后，仅符合正则筛选条件的日志会进入解析与存储流程。</div>
-                    </div>
-                  </div>
-
-                  <div v-else class="param-panel">
-                    <div data-testid="kafka-runtime-enabled" class="note">Kafka 采集插件为 P1 运行时能力，保存后由 Agent 按数据源状态热加载消费。</div>
-                    <div class="two">
-                      <template v-for="field in kafkaFormFields" :key="field.name">
-                        <label v-if="isKafkaFieldVisible(field)">{{ field.label }}
-                          <select v-if="field.kind === 'select'" v-model="inputForm[field.model]" :data-testid="field.testid" class="select" required>
-                            <option v-for="option in field.options" :key="option.value" :value="option.value">{{ option.label }}</option>
-                          </select>
-                          <input v-else v-model="inputForm[field.model]" :data-testid="field.testid" class="field" required :placeholder="field.placeholder" />
-                        </label>
-                      </template>
-                    </div>
-                    <div v-if="inputForm.logFilterEnabledKafka === 'on'" class="note">开启后，仅符合正则筛选条件的消息会进入解析与存储流程。</div>
-                    <div class="actions"><button data-testid="kafka-connectivity-check" class="btn ghost" type="button" @click="checkKafkaConnectivity">测试连通性</button></div>
-                    <p v-if="kafkaConnectivityStatus" data-testid="kafka-connectivity-status" class="status-line">{{ kafkaConnectivityStatus }}</p>
-                  </div>
-
-                  <div class="form-hint">默认写入策略由系统内部处理，采集页不展示索引配置；解析配置仅通过采集源名称关联。</div>
-                  <p v-if="inputFormError" data-testid="input-form-error" class="field-error form-error">{{ inputFormError }}</p>
-                  <div class="actions"><button class="btn" type="submit">{{ editingInputId ? "保存修改" : "新增" }}</button><button data-testid="cancel-input-form" class="btn ghost" type="button" @click="resetInputForm">取消</button></div>
-                </form>
-              </article>
-
-              <article class="card">
-                <div class="card-head"><span>采集列表</span><span class="status-line">点击行查看运行详情</span></div>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th></th><th>名称</th><th>采集插件</th><th>监听端口</th><th>运行状态</th><th>操作</th></tr></thead>
-                    <tbody>
-                      <template v-for="item in inputConfigs" :key="item.id">
-                        <tr
-                          :data-testid="`collect-row-${item.id}`"
-                          class="collect-runtime-row"
-                          :class="{ selected: selectedRuntimeId === item.id, abnormal: collectRuntimeSummary(item).state === 'error' }"
-                          @click="selectRuntimeSource(item)"
-                        >
-                          <td class="expand-cell"><button class="expand-toggle" :data-testid="`collect-expand-${item.id}`" type="button" :aria-expanded="selectedRuntimeId === item.id" @click.stop="selectRuntimeSource(item)">{{ selectedRuntimeId === item.id ? "▼" : "▶" }}</button></td>
-                          <td>{{ item.name }}</td>
-                          <td>{{ item.plugin }}</td>
-                          <td>{{ collectListenerPortLabel(item) }}</td>
-                          <td><span class="status-pill" :class="`runtime-${collectRuntimeSummary(item).state}`">{{ collectRuntimeSummary(item).label }}</span></td>
-                          <td>
-                            <div class="row-actions">
-                              <button v-if="collectCanStop(item)" class="link-btn" :data-testid="`toggle-input-${item.id}`" type="button" @click.stop="toggleInputStatus(item)">停止</button>
-                              <button v-else-if="collectCanStart(item)" class="link-btn" :data-testid="`toggle-input-${item.id}`" type="button" @click.stop="toggleInputStatus(item)">启动</button>
-                              <template v-else>
-                                <button class="link-btn" :data-testid="`view-runtime-${item.id}`" type="button" @click.stop="loadRuntimeDetail(item)">查看状态</button>
-                                <button class="link-btn" :data-testid="`retry-runtime-${item.id}`" type="button" @click.stop="retryRuntimeSource(item)">重试</button>
-                              </template>
-                              <button class="link-btn" type="button" @click.stop="editInput(item)">修改</button>
-                              <button class="link-btn delete" type="button" @click.stop="deleteInput(item.id)">删除</button>
-                            </div>
-                          </td>
-                        </tr>
-                        <tr v-if="selectedRuntimeId === item.id" class="collect-runtime-detail-row">
-                          <td colspan="6">
-                            <section data-testid="collect-runtime-detail" class="runtime-detail-card">
-                              <div :data-testid="`collect-runtime-detail-${item.id}`">
-                                <div class="runtime-detail-head">
-                                  <div><strong>运行详情</strong><span>{{ runtimeDetail?.name || selectedRuntimeName }}</span></div>
-                                  <span class="status-pill" :class="`runtime-${runtimeDetailSummary.state}`">{{ runtimeDetailSummary.label }}</span>
-                                </div>
-                                <p v-if="runtimeLoading" class="status-line">正在加载运行状态...</p>
-                                <p v-if="runtimeError" data-testid="collect-runtime-error" class="field-error form-error">{{ runtimeError }}</p>
-                                <div v-if="runtimeDetail" class="runtime-detail-grid">
-                                  <div><span>Agent 心跳</span><strong>{{ runtimeDetail.agent_id || "local-agent" }}</strong><small>{{ formatRuntimeValue(runtimeDetail.last_heartbeat_at) }}</small></div>
-                                  <div><span>listener 状态</span><strong>{{ runtimeDetail.runtime_status || "unknown" }} / {{ runtimeDetail.listener_status || "unknown" }}</strong><small>{{ runtimeDetail.endpoint || "未监听" }}</small></div>
-                                  <div><span>累计接收事件数</span><strong>{{ formatRuntimeNumber(runtimeDetail.received_events_total) }}</strong><small>最近接收时间 {{ formatRuntimeValue(runtimeDetail.last_received_at) }}</small></div>
-                                  <div><span>累计字节数</span><strong>{{ formatRuntimeNumber(runtimeDetail.received_bytes_total) }}</strong><small>原始日志接收字节</small></div>
-                                  <div><span>最近加载时间</span><strong>{{ formatRuntimeValue(runtimeDetail.last_loaded_at) }}</strong><small>配置版本 {{ runtimeDetail.config_version || 1 }}</small></div>
-                                  <div><span>最近错误</span><strong>{{ runtimeDetail.last_error_code || "无" }}</strong><small>{{ runtimeDetail.last_error || "暂无错误" }}</small></div>
-                                  <div class="topology"><span>链路拓扑</span><strong>{{ runtimeTopology(runtimeDetail) }}</strong><small>Agent -> Listener -> 解析规则 -> Index</small></div>
-                                </div>
-                              </div>
-                            </section>
-                          </td>
-                        </tr>
-                      </template>
-                    </tbody>
-                  </table>
-                </div>
-                <div data-testid="collect-pagination" class="pagination-bar">
-                  <div class="pagination-controls">
-                    <button data-testid="collect-prev" class="pager-arrow" type="button" :disabled="collectPagination.page <= 1" aria-label="上一页" @click="goCollectPage(collectPagination.page - 1)">‹</button>
-                    <template v-for="item in visibleCollectPages" :key="item.key">
-                      <span v-if="item.ellipsis" class="pager-ellipsis">...</span>
-                      <button v-else :data-testid="`collect-page-${item.page}`" class="pager-page" :class="{ active: item.page === collectPagination.page }" type="button" @click="goCollectPage(item.page)">{{ item.label }}</button>
-                    </template>
-                    <button data-testid="collect-next" class="pager-arrow" type="button" :disabled="collectPagination.page >= totalCollectPages" aria-label="下一页" @click="goCollectPage(collectPagination.page + 1)">›</button>
-                    <label class="page-size-select"><select v-model.number="collectPageSize" data-testid="collect-page-size" class="select compact-select" @change="reloadCollectFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label>
-                  </div>
-                </div>
-              </article>
-            </div>
+          <section v-if="isModuleForbidden" data-testid="module-forbidden" class="tab-panel forbidden-panel route-forbidden-alert">
+            <article class="card">
+              <div class="card-head"><span>403 权限不足</span><span class="status-line">{{ forbiddenModuleLabel }}</span></div>
+              <p class="status-line">当前账号没有访问该模块的权限，请联系管理员调整角色或 Token scope。</p>
+            </article>
           </section>
+          <NotFoundPanel v-if="currentModule === 'not-found'" />
 
-          <section v-if="currentModule === 'parse'" data-testid="parse-page" class="tab-panel">
-            <div class="panel-header"><h2><span class="page-icon page-icon-parse">PX</span>解析配置</h2><div class="panel-header-actions"><span class="badge">props.conf / 解析插件</span><button data-testid="show-rule-form" class="btn" type="button" @click="openRuleForm">新增解析规则</button></div></div>
-            <div v-if="pluginCatalogErrors.parser" data-testid="parser-plugin-catalog-error" class="catalog-load-error">
-              <span>{{ pluginCatalogErrors.parser }}</span>
-              <button data-testid="retry-parser-plugin-catalog" class="btn ghost" type="button" :disabled="pluginCatalogLoading.parser" @click="retryParserPluginCatalog">
-                {{ pluginCatalogLoading.parser ? "加载中" : "重试" }}
-              </button>
-            </div>
-            <div class="content-grid" :class="{ 'list-first': !showRuleForm }">
-              <article v-if="showRuleForm" data-testid="rule-form-card" class="card config-drawer" aria-label="解析配置表单">
-                <div class="card-head"><span>{{ editingRuleId ? "修改规则" : "新增规则" }}</span><button class="btn ghost" type="button" @click="clearRuleForm">清空</button></div>
-                <form class="form-grid" @submit.prevent="saveRule">
-                  <label>规则名称<input v-model="ruleForm.name" data-testid="rule-name" class="field" required placeholder="请输入解析规则名称" /></label>
-                  <div class="two">
-                    <label>关联采集数据源名称<select v-model="ruleForm.dataSourceName" data-testid="rule-source" class="select" required @change="applyDataSourceRoute"><option value="">请选择采集数据源</option><option v-for="item in inputConfigs" :key="item.id" :value="item.name">{{ item.name }}</option></select></label>
-                    <label>写入 index<select v-model="ruleForm.outputIndex" data-testid="rule-output-index" class="select" required><option v-for="item in businessIndexes" :key="item.id" :value="item.name">{{ item.name }}</option></select></label>
-                  </div>
-                  <label>优先级<input v-model.number="ruleForm.priority" data-testid="rule-priority" class="field" min="1" required type="number" placeholder="100" /></label>
-                  <div class="note">新增规则默认不绑定采集数据源，需手动选择；写入 index 仅展示逻辑 index，物理表由服务端内部映射。</div>
-	                  <label>解析方式</label>
-	                  <div class="plugin-grid parser-plugin-grid">
-	                    <button
-                        v-for="plugin in parserPluginOptions"
-                        :key="`${plugin.plugin_code}-${plugin.plugin_version}`"
-                        :data-testid="`parser-${plugin.plugin_code}`"
-                        :class="{ active: ruleForm.pluginCode === plugin.plugin_code }"
-                        class="plugin-card"
-                        type="button"
-                        @click="selectParserPlugin(plugin)"
-                      >
-                        <span class="plugin-icon" :class="plugin.plugin_code === 'regex' ? 'icon-regex' : 'icon-json'">{{ plugin.plugin_code === "regex" ? "F(x)" : "{}" }}</span>
-                        {{ parserPluginDisplayName(plugin) }}
-                      </button>
-	                  </div>
-	                  <label>日志样例<textarea v-model="ruleForm.sampleLog" data-testid="sample-log" required placeholder="请输入日志样例"></textarea></label>
-	                  <div v-if="ruleForm.pluginCode === 'regex'" class="param-panel"><label>正则表达式<textarea v-model="ruleForm.regexPattern" data-testid="regex-pattern" required placeholder="src=(?<src_ip>\\S+)\\s+dst=(?<dst_ip>\\S+)\\s+action=(?<action>\\S+)"></textarea></label></div>
-                  <div class="actions"><button data-testid="preview-parse" class="btn" type="button" @click="previewParse">预览解析结果</button></div>
-                  <div data-testid="parse-preview" class="preview-box table-wrap"><table><thead><tr><th>序号</th><th>字段</th><th>值</th><th>字段类型</th></tr></thead><tbody><tr v-if="!previewRows.length"><td colspan="4">暂无解析结果</td></tr><tr v-for="(row, index) in previewRows" :key="`${row.field}-${index}`"><td>{{ index + 1 }}</td><td><code>{{ row.field }}</code></td><td>{{ row.value }}</td><td>{{ row.type }}</td></tr></tbody></table></div>
-                  <details class="advanced-panel" open><summary>高级配置 / props.conf</summary><label>最终 props.conf 配置<textarea v-model="ruleForm.propsConf" data-testid="props-conf" class="props-editor" required placeholder="[source::firewall]&#10;TIME_PREFIX = event_time="></textarea></label></details>
-                  <div class="form-hint">规则仅在 <code>ingest</code> 阶段生效。页面不单独展示事件时间字段；时间识别请在高级配置中使用 props.conf 配置项。</div>
-                  <p v-if="ruleFormError" data-testid="parse-form-error" class="field-error form-error">{{ ruleFormError }}</p>
-                  <div class="actions"><button class="btn" type="submit">{{ editingRuleId ? "保存修改" : "新增" }}</button><button data-testid="cancel-rule-form" class="btn ghost" type="button" @click="resetRuleForm">取消</button></div>
-                </form>
-              </article>
-              <article class="card"><div class="card-head"><span>规则列表</span><span class="status-line">查询 / 修改 / 删除</span></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>解析插件</th><th>采集数据源</th><th>写入 index</th><th>优先级</th><th>props.conf</th><th>操作</th></tr></thead><tbody><tr v-for="item in parseRules" :key="item.id"><td>{{ item.name }}</td><td>{{ item.plugin }}</td><td><code>{{ item.dataSourceName || "未选择" }}</code></td><td><code>{{ item.outputIndex || "app" }}</code></td><td><code>{{ item.priority || 100 }}</code></td><td><code class="multiline-code">{{ item.propsConf }}</code></td><td><div class="row-actions"><button class="link-btn" type="button" @click="editRule(item)">修改</button><button class="link-btn delete" type="button" @click="deleteRule(item.id)">删除</button></div></td></tr></tbody></table></div><div data-testid="parse-pagination" class="pagination-bar"><div class="pagination-controls"><button data-testid="parse-prev" class="pager-arrow" type="button" :disabled="parsePagination.page <= 1" aria-label="上一页" @click="goParsePage(parsePagination.page - 1)">‹</button><template v-for="item in visibleParsePages" :key="item.key"><span v-if="item.ellipsis" class="pager-ellipsis">...</span><button v-else :data-testid="`parse-page-${item.page}`" class="pager-page" :class="{ active: item.page === parsePagination.page }" type="button" @click="goParsePage(item.page)">{{ item.label }}</button></template><button data-testid="parse-next" class="pager-arrow" type="button" :disabled="parsePagination.page >= totalParsePages" aria-label="下一页" @click="goParsePage(parsePagination.page + 1)">›</button><label class="page-size-select"><select v-model.number="parsePageSize" data-testid="parse-page-size" class="select compact-select" @change="reloadParseFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label></div></div></article>
-            </div>
-          </section>
+          <CollectPanel v-else-if="currentModule === 'collect'" v-bind="panelBindings" />
 
-          <section v-if="currentModule === 'index'" data-testid="index-page" class="tab-panel">
-            <div class="panel-header"><h2><span class="page-icon page-icon-index">IX</span>索引配置</h2><div class="panel-header-actions"><span class="badge">ClickHouse 物理分表</span><button data-testid="show-index-form" class="btn" type="button" @click="openIndexForm">新增 index</button></div></div>
-            <div class="content-grid" :class="{ 'list-first': !showIndexForm }">
-              <article data-testid="writer-runtime-panel" class="card writer-runtime-card"><div class="card-head"><span>Writer 入库状态</span><button class="btn ghost" type="button" @click="loadWriterRuntime(true)">刷新</button></div><div v-if="writerRuntimeLoading" class="status-line">Writer 状态加载中...</div><p v-else-if="writerRuntimeError" class="field-error">{{ writerRuntimeError }}</p><div v-else class="writer-runtime-grid"><div><span>状态</span><strong>{{ writerRuntime.status || "unknown" }}</strong><small>{{ writerRuntime.output_topic || "未连接" }}</small></div><div><span>吞吐</span><strong>{{ formatWriterEPS(writerRuntime.eps) }} EPS</strong><small>累计 {{ formatNumber(writerRuntime.total_events || 0) }} 条</small></div><div><span>P95 入库延迟</span><strong>P95 {{ formatNumber(writerRuntime.p95_ingest_latency_ms || 0) }}ms</strong><small>最近批次 {{ formatNumber(writerRuntime.last_duration_ms || 0) }}ms</small></div><div><span>失败 / Deadletter</span><strong>{{ formatPercent(writerRuntime.failure_rate || 0) }}</strong><small>失败 {{ formatNumber(writerRuntime.failed_events || 0) }} 条 · DLQ {{ formatNumber(writerRuntime.deadletter_events || 0) }} 条</small></div><div><span>批量策略</span><strong>{{ formatNumber(writerRuntime.batch_size || 0) }} 条/批</strong><small>批次 {{ formatNumber(writerRuntime.total_batches || 0) }} · 重试 {{ formatNumber(writerRuntime.last_retry_count || 0) }}</small></div></div></article>
-                  <article v-if="showIndexForm" data-testid="index-form-card" class="card config-drawer" aria-label="索引配置表单"><div class="card-head"><span>{{ editingIndexId ? "修改索引" : "新增索引" }}</span><button class="btn ghost" type="button" @click="clearIndexForm">清空</button></div><form class="form-grid" @submit.prevent="saveIndex"><label>index 名称<input v-model="indexForm.name" data-testid="index-name" class="field" required :disabled="Boolean(editingIndexId)" placeholder="请输入index名称" /></label><div class="two"><label>TTL 天数<input v-model="indexForm.ttl" data-testid="index-ttl" class="field" min="1" required type="number" /></label><label>状态<select v-model="indexForm.status" data-testid="index-status" class="select" required><option>active</option><option>disabled</option></select></label></div><p v-if="indexFormError" data-testid="index-form-error" class="field-error form-error">{{ indexFormError }}</p><div class="actions"><button class="btn" type="submit">{{ editingIndexId ? "保存修改" : "新增" }}</button><button data-testid="cancel-index-form" class="btn ghost" type="button" @click="resetIndexForm">取消</button></div></form></article>
-              <article class="card">
-                <div class="card-head"><span>索引列表</span><span class="status-line">查询 / 修改 / 删除 / 趋势</span></div>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>index</th><th>物理表</th><th>TTL</th><th>数据量</th><th>存储大小</th><th>最近写入</th><th>状态</th><th>操作</th></tr></thead>
-                    <tbody>
-                      <template v-for="item in indexes" :key="item.id">
-                        <tr>
-                          <td><code>{{ item.name }}</code></td>
-                          <td><code>{{ item.tableName || `events_${item.name}` }}</code></td>
-                          <td><span>{{ item.ttl }}d</span><br /><small v-if="item.physicalTtl" class="status-line">物理 {{ item.physicalTtl }}d</small></td>
-                          <td>{{ formatNumber(item.rows) }}</td>
-                          <td>{{ formatBytes(item.storageBytes) }}</td>
-                          <td>{{ formatIndexDateTime(item.latestEventTime) }}</td>
-                          <td>{{ item.status }}</td>
-                          <td>
-                            <div class="row-actions">
-                              <button class="link-btn" type="button" @click="loadIndexTrend(item)">{{ item.trendOpen ? "收起趋势" : "趋势" }}</button>
-                              <button class="link-btn" type="button" @click="editIndex(item)">修改</button>
-                              <button class="link-btn delete" type="button" @click="deleteIndex(item.id)">删除</button>
-                            </div>
-                          </td>
-                        </tr>
-                        <tr v-if="item.trendOpen" class="index-trend-row">
-                          <td colspan="8">
-                            <div data-testid="index-trend-panel" class="index-trend-panel">
-                              <p v-if="item.trendLoading" class="status-line">趋势加载中...</p>
-                              <p v-else-if="item.trendError" class="field-error">{{ item.trendError }}</p>
-                              <div v-else>
-                                <div class="index-trend-summary">
-                                  <span>近 7 天净增 {{ formatNumber(item.trend?.rows_growth_7d || 0) }} 条</span>
-                                  <span>存储变化 {{ formatBytes(Math.abs(item.trend?.storage_growth_bytes_7d || 0)) }}</span>
-                                  <span>当前 {{ formatNumber(item.trend?.current_rows || item.rows) }} 条 / {{ formatBytes(item.trend?.current_storage_bytes || item.storageBytes) }}</span>
-                                  <span>{{ item.trend?.source === "snapshot" ? "采样数据" : "实时数据" }}</span>
-                                  <span v-if="item.trend?.snapshot_retention_days">保留 {{ item.trend.snapshot_retention_days }} 天</span>
-                                </div>
-                                <div class="index-trend-chart">
-                                  <div class="index-trend-plot">
-                                    <div data-testid="index-trend-y-axis" class="index-trend-y-axis">
-                                      <span v-for="tick in indexTrendYTicks(item)" :key="tick.key">{{ tick.label }}</span>
-                                    </div>
-                                    <div class="index-trend-main">
-                                      <div class="index-trend-bars">
-                                        <span v-for="(point, pointIndex) in (item.trend?.points || [])" :key="`${point.date || point.captured_at || pointIndex}-${pointIndex}`" :title="`${indexTrendPointLabel(point)}: ${formatNumber(point.rows)} 条`" :style="{ height: `${indexTrendBarHeight(item, point)}%` }"></span>
-                                      </div>
-                                      <div data-testid="index-trend-x-axis" class="index-trend-x-axis">
-                                        <span v-for="tick in indexTrendTicks(item)" :key="tick.key">{{ tick.label }}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      </template>
-                    </tbody>
-                  </table>
-                </div>
-                <div data-testid="index-pagination" class="pagination-bar">
-                  <div class="pagination-controls">
-                    <button data-testid="index-prev" class="pager-arrow" type="button" :disabled="indexPagination.page <= 1" aria-label="上一页" @click="goIndexPage(indexPagination.page - 1)">‹</button>
-                    <template v-for="item in visibleIndexPages" :key="item.key">
-                      <span v-if="item.ellipsis" class="pager-ellipsis">...</span>
-                      <button v-else :data-testid="`index-page-${item.page}`" class="pager-page" :class="{ active: item.page === indexPagination.page }" type="button" @click="goIndexPage(item.page)">{{ item.label }}</button>
-                    </template>
-                    <button data-testid="index-next" class="pager-arrow" type="button" :disabled="indexPagination.page >= totalIndexPages" aria-label="下一页" @click="goIndexPage(indexPagination.page + 1)">›</button>
-                    <label class="page-size-select"><select v-model.number="indexPageSize" data-testid="index-page-size" class="select compact-select" @change="reloadIndexFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label>
-                  </div>
-                </div>
-              </article>
-            </div>
-          </section>
+          <ParsePanel v-else-if="currentModule === 'parse'" v-bind="panelBindings" />
 
-          <section v-if="currentModule === 'search'" data-testid="search-page" class="tab-panel">
-            <div class="panel-header"><h2><span class="page-icon page-icon-search">SP</span>搜索页</h2><span class="badge">SPL / 时间筛选</span></div>
-            <div class="search-layout">
-              <div class="search-row"><textarea v-model="searchQuery" data-testid="search-query" class="search-box" rows="1" aria-label="SPL 搜索语句" placeholder="请输入 SPL语句"></textarea><select v-model="searchTime" data-testid="search-time" class="select"><option v-for="option in timeOptions" :key="option">{{ option }}</option></select><button data-testid="search-button" class="btn" type="button" @click="runSearchFirstPage">查询</button><button class="btn ghost" type="button" @click="saveSearch">保存</button></div>
-              <div data-testid="time-help" class="time-help">高级时间：<code>@d</code> 表示当天 0 点，<code>earliest=@d latest=now</code> 表示今天 0 点到当前时间，<code>-7d@d</code> 表示 7 天前 0 点。</div>
-              <div data-testid="timeline-chart" class="timeline timeline-shell" :class="{ empty: !timelineBars.length }"><div v-if="timelineBars.length" data-testid="timeline-y-axis" class="timeline-y-axis"><span v-for="label in timelineYAxisLabels" :key="label">{{ label }}</span></div><div class="timeline-plot"><div v-if="!timelineBars.length" class="timeline-empty">{{ timelineStatus }}</div><div v-else class="timeline-bars"><div v-for="bucket in timelineBars" :key="bucket.start" data-testid="timeline-bar" class="bar" :title="timelineTooltip(bucket)" :style="{ height: `${bucket.height}%` }"></div></div><div v-if="timelineBars.length" data-testid="timeline-x-axis" class="timeline-x-axis"><span v-for="tick in timelineTicks" :key="tick.key">{{ tick.label }}</span></div></div></div>
-              <div class="search-toolbar"><div data-testid="saved-summary" class="saved-summary"><strong>保存搜索</strong><span>仅占一行，点击查看</span><span class="count">{{ savedSearches.length }}</span></div><button data-testid="toggle-saved-searches" class="btn ghost" type="button" @click="toggleSavedSearches">{{ savedOpen ? "收起保存搜索" : "查看保存搜索" }}</button></div>
-              <div v-if="savedSearchError" data-testid="saved-search-error" class="field-error">{{ savedSearchError }}</div>
-              <div v-if="savedOpen" class="saved-drawer"><div class="drawer-head"><span>已保存搜索</span><span class="status-line">查询 / 删除 / 回填</span></div><div class="table-wrap"><table><thead><tr><th>SPL</th><th>时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in savedSearches" :key="item.id" :data-testid="`saved-search-row-${item.id}`"><td><code>{{ item.query }}</code></td><td>{{ item.time }}</td><td><div class="row-actions"><button class="link-btn" type="button" @click="useSearch(item)">回填</button><button class="link-btn delete" type="button" :data-testid="`delete-saved-search-${item.id}`" @click="deleteSavedSearch(item.id)">删除</button></div></td></tr></tbody></table></div></div>
-              <article class="card"><div class="card-head result-head"><div><span>搜索结果</span><div class="result-meta">{{ resultStatus }}</div></div><span data-testid="result-mode" class="mode-pill">{{ resultMode === "stats" ? "统计视图" : (resultMode === "table" ? "表格视图" : "事件视图") }}</span></div><div data-testid="search-results" class="table-wrap"><table class="result-table"><thead><tr v-if="resultMode === 'stats' || resultMode === 'table'"><th v-for="field in statsFields" :key="field">{{ field }}</th></tr><tr v-else><th class="expand-col"></th><th>时间</th><th>事件</th></tr></thead><tbody><tr v-if="!searchResults.length"><td :colspan="resultMode === 'stats' || resultMode === 'table' ? Math.max(statsFields.length, 1) : 3">暂无匹配结果</td></tr><template v-for="(item, rowIndex) in searchResults" :key="item.id || item.group || rowIndex"><tr><template v-if="resultMode === 'stats' || resultMode === 'table'"><td v-for="field in statsFields" :key="field"><code>{{ formatStatsCell(field, item[field]) }}</code></td></template><template v-else><td><button :data-testid="`expand-event-${eventRowKey(item, rowIndex)}`" class="expand-toggle" type="button" @click="toggleEventDetail(item, rowIndex)">{{ isEventExpanded(item, rowIndex) ? "▼" : "▶" }}</button></td><td>{{ item.time }}</td><td><code class="multiline-code">{{ item.event }}</code></td></template></tr><tr v-if="resultMode === 'events' && isEventExpanded(item, rowIndex)" class="event-detail-row"><td></td><td colspan="2"><div class="event-detail"><div class="detail-raw"><span>raw</span><code class="multiline-code">{{ item.raw }}</code></div><table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody><tr v-for="(row, detailIndex) in item.detailRows" :key="`${row.name}-${detailIndex}`"><td><code>{{ row.name }}</code></td><td><code>{{ formatDetailValue(row.value) }}</code></td></tr></tbody></table></div></td></tr></template></tbody></table></div><div data-testid="search-pagination" class="pagination-bar"><div data-testid="search-pagination-right" class="pagination-controls"><button data-testid="search-prev" class="pager-arrow" type="button" :disabled="searchPagination.page <= 1 || isSearchLoading" aria-label="上一页" @click="goSearchPage(searchPagination.page - 1)">‹</button><template v-for="item in visibleSearchPages" :key="item.key"><span v-if="item.ellipsis" class="pager-ellipsis">...</span><button v-else :data-testid="`search-page-${item.page}`" class="pager-page" :class="{ active: item.page === searchPagination.page }" type="button" :disabled="isSearchLoading" @click="goSearchPage(item.page)">{{ item.label }}</button></template><button data-testid="search-next" class="pager-arrow" type="button" :disabled="searchPagination.page >= totalSearchPages || isSearchLoading" aria-label="下一页" @click="goSearchPage(searchPagination.page + 1)">›</button><label class="page-size-select"><select v-model.number="searchPageSize" data-testid="search-page-size" class="select compact-select" @change="runSearchFirstPage"><option v-for="size in searchPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label></div></div></article>
-            </div>
-          </section>
+          <IndexPanel v-else-if="currentModule === 'index'" v-bind="panelBindings" />
 
-          <section v-if="currentModule === 'plugins'" data-testid="plugins-page" class="tab-panel">
-            <div class="panel-header"><h2><span class="page-icon page-icon-plugins">PL</span>插件管理</h2><span class="badge">采集 / 解析 / 搜索插件</span></div>
-            <div class="search-layout">
-              <article class="card">
-                <div class="card-head"><span>插件类型</span><span class="status-line">上传插件包后默认禁用，需后续启用后才参与运行</span></div>
-                <div class="plugin-type-tabs" role="tablist" aria-label="插件类型">
-                  <button v-for="tab in pluginTabs" :key="tab.key" :data-testid="`plugin-tab-${tab.key}`" :class="{ active: currentPluginTab === tab.key }" type="button" @click="selectPluginTab(tab.key)">
-                    <span>{{ tab.label }}</span>
-                    <small>{{ pluginTypeCount(tab.key) }}</small>
-                  </button>
-                </div>
-                <div class="plugin-upload-panel">
-                  <label class="plugin-file-field"><span>插件包上传</span><span class="plugin-file-control"><input data-testid="plugin-upload-file" class="plugin-file-input" type="file" accept=".zip,application/zip" @change="onPluginFileChange" /><span class="plugin-file-button">选择插件包</span><span data-testid="plugin-upload-filename" class="plugin-file-name">{{ pluginUploadFileName }}</span></span></label>
-                  <button data-testid="plugin-upload-button" class="btn" type="button" @click="uploadPluginPackage">导入插件包</button>
-                  <span data-testid="plugin-upload-status" class="status-line">{{ pluginUploadStatus }}</span>
-                </div>
-                <p v-if="pluginUploadError" data-testid="plugin-upload-error" class="field-error form-error">{{ pluginUploadError }}</p>
-              </article>
+          <SearchPanel v-else-if="currentModule === 'search'" v-bind="panelBindings" />
 
-              <article class="card">
-                <div class="card-head"><span>{{ currentPluginTabLabel }}</span><span class="status-line">{{ currentPluginPagination.total }} 个插件</span></div>
-                <div class="table-wrap">
-                  <table>
-                    <thead><tr><th>插件名称</th><th>编码</th><th>版本</th><th>运行时</th><th>状态</th><th>校验值</th><th>操作</th></tr></thead>
-                    <tbody>
-                      <tr v-if="!filteredPlugins.length"><td colspan="7">暂无插件</td></tr>
-                      <template v-for="item in filteredPlugins" :key="`${item.plugin_type}-${item.plugin_code}-${item.plugin_version}`">
-                        <tr :data-testid="`plugin-row-${item.plugin_code}-${item.plugin_version || '1.0.0'}`">
-                          <td>{{ item.name || item.plugin_code }}</td>
-                          <td><code>{{ item.plugin_code }}</code></td>
-                          <td>{{ item.plugin_version || "1.0.0" }}</td>
-                          <td>{{ item.runtime || "go_builtin" }}</td>
-                          <td><span class="status-pill" :class="isPluginEnabled(item.status) ? 'runtime-running' : 'runtime-stopped'">{{ pluginStatusLabel(item.status) }}</span></td>
-                          <td><code class="muted-code">{{ item.checksum || "builtin" }}</code></td>
-                          <td>
-                            <span v-if="isBuiltInPlugin(item)" class="status-line">内置基础能力</span>
-                            <div v-else class="row-actions plugin-row-actions">
-                              <button :data-testid="`plugin-detail-${item.plugin_code}`" class="plugin-action plugin-action-detail" type="button" @click="loadPluginDetail(item)">{{ isPluginDetailOpen(item) ? "收起详情" : "查看详情" }}</button>
-                              <button v-if="!isPluginEnabled(item.status)" :data-testid="`plugin-enable-${item.plugin_code}`" class="plugin-action plugin-action-enable" type="button" @click="setPluginStatus(item, 'enable')">启用</button>
-                              <button v-if="isPluginEnabled(item.status)" :data-testid="`plugin-disable-${item.plugin_code}`" class="plugin-action plugin-action-disable" type="button" @click="setPluginStatus(item, 'disable')">停用</button>
-                              <button v-if="!isPluginEnabled(item.status)" :data-testid="`plugin-delete-${item.plugin_code}`" class="plugin-action plugin-action-delete" type="button" @click="deletePlugin(item)">删除</button>
-                            </div>
-                          </td>
-                        </tr>
-                        <tr v-if="isPluginDetailOpen(item)" :data-testid="`plugin-detail-row-${item.plugin_code}`" class="plugin-detail-inline-row">
-                          <td colspan="7">
-                            <article data-testid="plugin-detail-panel" class="plugin-detail-inline">
-                              <div class="card-head">
-                                <span>{{ selectedPlugin.name || selectedPlugin.plugin_code }}</span>
-                                <span class="status-line">引用 {{ pluginReferenceCount }} 处</span>
-                              </div>
-                              <div class="runtime-detail-grid plugin-detail-grid">
-                                <div><span>插件编码</span><strong>{{ selectedPlugin.plugin_code }}</strong></div>
-                                <div><span>插件类型</span><strong>{{ selectedPlugin.plugin_type }}</strong></div>
-                                <div><span>当前版本</span><strong>{{ selectedPlugin.plugin_version }}</strong></div>
-                                <div><span>运行时</span><strong>{{ selectedPlugin.runtime || "go_builtin" }}</strong></div>
-                                <div><span>状态</span><strong>{{ pluginStatusLabel(selectedPlugin.status) }}</strong></div>
-                                <div><span>Checksum</span><strong>{{ selectedPlugin.checksum || "builtin" }}</strong></div>
-                                <div v-if="selectedPlugin.entrypoint" class="topology"><span>Entrypoint</span><small>{{ selectedPlugin.entrypoint }}</small></div>
-                                <div v-if="pluginEffectiveRuntimeConfig" class="topology"><span>执行限制</span><small>{{ pluginEffectiveRuntimeText }}</small></div>
-                                <div v-if="selectedPlugin.description" class="topology"><span>说明</span><small>{{ selectedPlugin.description }}</small></div>
-                                <div class="topology"><span>Config Schema</span><small>{{ pluginSchemaText }}</small></div>
-                                <div class="topology"><span>UI Schema</span><small>{{ pluginUISchemaText }}</small></div>
-                              </div>
-                              <div v-if="selectedPlugin.plugin_type !== 'search_command'" class="table-wrap plugin-reference-table">
-                                <table>
-                                  <thead><tr><th>引用类型</th><th>引用对象</th><th>状态</th></tr></thead>
-                                  <tbody>
-                                    <tr v-if="!pluginReferenceItems.length"><td colspan="3">暂无引用</td></tr>
-                                    <tr v-for="ref in pluginReferenceItems" :key="`${ref.type}-${ref.id || ref.name}`">
-                                      <td>{{ referenceTypeLabel(ref.type) }}</td>
-                                      <td>{{ ref.name || ref.id || "-" }}</td>
-                                      <td>{{ ref.status || "-" }}</td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                              </div>
-                              <div v-if="showPluginExecutionAudits" data-testid="plugin-execution-audits" class="table-wrap plugin-reference-table">
-                                <div class="card-head"><span>最近执行记录</span><span class="status-line">{{ pluginExecutionAudits.length }} 条</span></div>
-                                <table>
-                                  <thead><tr><th>执行时间</th><th>命令</th><th>耗时</th><th>输入事件数</th><th>输出事件数</th><th>状态</th><th>错误码</th></tr></thead>
-                                  <tbody>
-                                    <tr v-if="pluginExecutionAuditLoading"><td colspan="7">执行审计加载中...</td></tr>
-                                    <tr v-else-if="!pluginExecutionAudits.length"><td colspan="7">暂无执行记录</td></tr>
-                                    <tr v-for="audit in pluginExecutionAudits" :key="`${audit.request_id}-${audit.command_name}-${audit.created_at}`">
-                                      <td>{{ formatFullTime(audit.created_at) }}</td>
-                                      <td><code>{{ audit.command_name || "-" }}</code></td>
-                                      <td>{{ audit.elapsed_ms ?? 0 }}ms</td>
-                                      <td>{{ formatRuntimeNumber(audit.input_rows) }} 条</td>
-                                      <td>{{ formatRuntimeNumber(audit.output_rows) }} 条</td>
-                                      <td><span class="status-pill" :class="audit.success ? 'runtime-running' : 'runtime-stopped'">{{ audit.success ? "成功" : "失败" }}</span></td>
-                                      <td><code class="muted-code">{{ audit.error_code || "-" }}</code></td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                                <p v-if="pluginExecutionAuditError" class="field-error form-error">{{ pluginExecutionAuditError }}</p>
-                              </div>
-                              <div class="plugin-current-actions">
-                                <span v-if="isPluginReferenced(selectedPlugin)" class="status-line">被引用，不能停用或删除</span>
-                                <span v-else class="status-line">启停与删除操作可直接在插件行操作列执行</span>
-                              </div>
-                              <p v-if="pluginActionStatus" class="status-line">{{ pluginActionStatus }}</p>
-                              <p v-if="pluginActionError" class="field-error form-error">{{ pluginActionError }}</p>
-                            </article>
-                          </td>
-                        </tr>
-                      </template>
-                    </tbody>
-                  </table>
-                </div>
-                <div data-testid="plugin-pagination" class="pagination-bar">
-                  <div class="pagination-controls">
-                    <button data-testid="plugin-prev" class="pager-arrow" type="button" :disabled="currentPluginPagination.page <= 1" aria-label="上一页" @click="goPluginPage(currentPluginPagination.page - 1)">‹</button>
-                    <template v-for="item in visiblePluginPages" :key="item.key">
-                      <span v-if="item.ellipsis" class="pager-ellipsis">...</span>
-                      <button v-else :data-testid="`plugin-page-${item.page}`" class="pager-page" :class="{ active: item.page === currentPluginPagination.page }" type="button" @click="goPluginPage(item.page)">{{ item.label }}</button>
-                    </template>
-                    <button data-testid="plugin-next" class="pager-arrow" type="button" :disabled="currentPluginPagination.page >= totalPluginPages" aria-label="下一页" @click="goPluginPage(currentPluginPagination.page + 1)">›</button>
-                    <label class="page-size-select"><select v-model.number="currentPluginPageSize" data-testid="plugin-page-size" class="select compact-select" @change="reloadPluginFirstPage"><option v-for="size in listPageSizes" :key="size" :value="size">{{ size }} 条/页</option></select></label>
-                  </div>
-                </div>
-              </article>
-            </div>
-          </section>
+          <PluginsPanel v-else-if="currentModule === 'plugins'" v-bind="panelBindings" />
+
+          <RbacPanel v-else-if="currentModule === 'rbac'" v-bind="panelBindings" />
         </section>
       </section>
     </section>
@@ -448,18 +77,34 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from "vue";
+import { ref, reactive, computed, inject, onBeforeUnmount, onMounted, watch } from "vue";
+import { RouterLink, routeLocationKey, routerKey } from "vue-router";
+import { createAuthContext, authContextKey } from "./auth-context.js";
+import { requestJSON } from "./http-client.js";
+import CollectPanel from "./panels/CollectPanel.vue";
+import IndexPanel from "./panels/IndexPanel.vue";
+import NotFoundPanel from "./panels/NotFoundPanel.vue";
+import ParsePanel from "./panels/ParsePanel.vue";
+import PluginsPanel from "./panels/PluginsPanel.vue";
+import RbacPanel from "./panels/RbacPanel.vue";
+import SearchPanel from "./panels/SearchPanel.vue";
 
-const tokenKey = "xdp_api_token";
 const currentModuleKey = "xdp_current_module";
 const defaultModuleKey = "collect";
 const screen = ref("login");
-const auth = reactive({ enabled: true, authenticated: false });
+const appReady = ref(false);
 const credentials = reactive({ username: "admin", password: "" });
 const loginError = ref("");
 const lastProtectedPayload = ref("");
-const modules = [{ key: "collect", label: "采集配置" }, { key: "parse", label: "解析配置" }, { key: "index", label: "索引配置" }, { key: "search", label: "搜索页" }, { key: "plugins", label: "插件管理" }];
-const currentModule = ref(defaultModuleKey);
+const baseModules = [{ key: "collect", label: "采集配置" }, { key: "parse", label: "解析配置" }, { key: "index", label: "索引配置" }, { key: "search", label: "搜索页" }, { key: "plugins", label: "插件管理" }, { key: "rbac", label: "用户与权限" }];
+const fallbackModule = ref(defaultModuleKey);
+const router = inject(routerKey, null);
+const route = inject(routeLocationKey, null);
+const authContext = inject(authContextKey, null) || createAuthContext();
+const auth = authContext.state.auth;
+const routeModule = computed(() => routeModuleFromRouteName(route?.name));
+const currentModule = computed(() => routeModule.value || fallbackModule.value);
+const currentUser = authContext.state.currentUser;
 
 const inputConfigs = ref([]);
 const parseRules = ref([]);
@@ -520,11 +165,12 @@ const savedOpen = ref(false);
 const savedSearchError = ref("");
 const savedSearches = ref([]);
 const savedSearchesLoaded = ref(false);
-const pluginTabs = [
+const basePluginTabs = [
   { key: "input", label: "采集插件" },
   { key: "parser", label: "解析插件" },
   { key: "search_command", label: "搜索命令插件" }
 ];
+const p2AssignablePermissionCodes = ["datasource:read", "parse_rule:read", "index:read", "index:manage", "search:execute", "rbac:manage"];
 const currentPluginTab = ref("input");
 const pluginCatalog = ref([]);
 const pluginCatalogLoaded = reactive({ input: false, parser: false, search_command: false });
@@ -550,21 +196,55 @@ const pluginActionError = ref("");
 const pluginExecutionAudits = ref([]);
 const pluginExecutionAuditError = ref("");
 const pluginExecutionAuditLoading = ref(false);
+const rbacUsers = ref([]);
+const rbacRoles = ref([]);
+const rbacPermissions = ref([]);
+const rbacLoaded = ref(false);
+const rbacError = ref("");
+const rbacNotice = ref("");
+const rbacUserError = ref("");
+const rbacRoleError = ref("");
+const rbacUserPagination = ref(defaultListPagination(20));
+const rbacUserForm = reactive(defaultRBACUserForm());
+const rbacRoleForm = reactive(defaultRBACRoleForm());
+const editingRBACUserId = ref("");
+const editingRBACRoleId = ref("");
 const catalog = [
   { id: "evt-1", time: timeAgo(0, 0, 12), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "api-01", service: "api", action: "allow", bytes: 1024, event: 'service=api level=info msg="login ok" bytes=1024' },
   { id: "evt-2", time: timeAgo(0, 0, 36), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "web-01", service: "api", action: "allow", bytes: 3840, event: 'service=api level=warn msg="slow request" bytes=3840' },
   { id: "evt-3", time: timeAgo(1, 3, 0), index: "app", source: "syslog-default", sourcetype: "app-regex", host: "pay-01", service: "checkout", action: "allow", bytes: 2048, event: 'service=checkout level=info msg="payment ok" bytes=2048' },
   { id: "evt-4", time: timeAgo(1, 4, 0), index: "firewall", source: "syslog-udp", sourcetype: "firewall", host: "edge-01", service: "firewall", action: "deny", bytes: 2048, event: "src=10.0.1.8 dst=172.16.0.4 action=deny bytes=2048" }
 ];
+const modules = computed(() => baseModules.filter((item) => canAccessModule(item.key)));
+const assignableRBACPermissions = computed(() => {
+  const byCode = new Map((rbacPermissions.value || []).map((item) => [item.permission_code, item]));
+  return p2AssignablePermissionCodes.map((code) => byCode.get(code) || { permission_code: code, display_name: p2PermissionDisplayName(code) });
+});
+const currentUserLabel = computed(() => currentUser.displayName || currentUser.username || "Administrator");
+const currentModuleLabel = computed(() => baseModules.find((item) => item.key === currentModule.value)?.label || currentModule.value || "未知模块");
+const routePath = computed(() => route?.fullPath || route?.path || "");
+const forbiddenModule = computed(() => {
+  const value = route?.query?.forbidden;
+  if (typeof value === "string" && value) return value;
+  if (Array.isArray(value) && value[0]) return value[0];
+  if (!router && isKnownModule(currentModule.value) && !canAccessModule(currentModule.value)) return currentModule.value;
+  return "";
+});
+const forbiddenModuleLabel = computed(() => baseModules.find((item) => item.key === forbiddenModule.value)?.label || forbiddenModule.value || currentModuleLabel.value);
+const isModuleForbidden = computed(() => Boolean(forbiddenModule.value));
+const pluginTabs = computed(() => basePluginTabs.filter((tab) => canManagePluginType(tab.key)));
+const canManageCurrentPluginTab = computed(() => canManagePluginType(currentPluginTab.value));
 const counts = computed(() => ({
   collect: Number(collectPagination.value.total || inputConfigs.value.length),
   parse: Number(parsePagination.value.total || parseRules.value.length),
   index: Number(indexPagination.value.total || indexes.value.length),
   search: savedSearches.value.length,
-  plugins: Object.values(pluginTypeCounts).reduce((sum, value) => sum + Number(value || 0), 0)
+  plugins: Object.values(pluginTypeCounts).reduce((sum, value) => sum + Number(value || 0), 0),
+  rbac: Number(rbacUserPagination.value.total || rbacUsers.value.length) + rbacRoles.value.length
 }));
 const businessIndexes = computed(() => indexes.value.filter((item) => !isSystemIndex(item)));
 const selectedRuntimeName = computed(() => inputConfigs.value.find((item) => item.id === selectedRuntimeId.value)?.name || "");
+const canUseSyslogInput = computed(() => canUsePlugin("input", "syslog"));
 const kafkaInputPlugin = computed(() => pluginCatalog.value.find((item) => item.plugin_type === "input" && item.plugin_code === "kafka" && isPluginEnabled(item.status)) || null);
 const parserPluginOptions = computed(() => {
   const items = pluginCatalog.value.filter((item) => item.plugin_type === "parser" && isPluginEnabled(item.status));
@@ -576,7 +256,8 @@ const parserPluginOptions = computed(() => {
     status: "enabled",
     checksum: "builtin"
   };
-  return dedupePlugins([regex, ...items.filter((item) => item.plugin_code !== "regex")]);
+  const base = canUsePlugin("parser", "regex") ? [regex] : [];
+  return dedupePlugins([...base, ...items.filter((item) => item.plugin_code !== "regex")]);
 });
 const inputPluginBadge = computed(() => kafkaInputPlugin.value ? "Syslog / Kafka" : "Syslog / 导入插件");
 const kafkaSchemaProperties = computed(() => kafkaInputPlugin.value?.config_schema?.properties || {});
@@ -629,7 +310,13 @@ const currentPluginPageSize = computed({
 const totalPluginPages = computed(() => totalListPages(currentPluginPagination.value, currentPluginPageSize.value));
 const visiblePluginPages = computed(() => visiblePageTokens(totalPluginPages.value, currentPluginPagination.value.page));
 const pluginUploadFileName = computed(() => pluginUploadFile.value?.name || "未选择文件");
-onMounted(loadAuthStatus);
+onMounted(() => {
+  document.addEventListener("pointerdown", handleConfigDrawerOutsidePointerDown, true);
+  loadAuthStatus();
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", handleConfigDrawerOutsidePointerDown, true);
+});
 watch(() => [
   ruleForm.name,
   ruleForm.pluginCode,
@@ -643,19 +330,75 @@ watch(() => [
   ruleForm.delimitedQuote,
   ruleForm.delimitedFields
 ], () => syncPropsConf(), { immediate: true });
-watch(currentModule, async (module) => {
-  persistCurrentModule(module);
+watch(() => [screen.value, currentModule.value], async ([currentScreen, module]) => {
+  if (currentScreen !== "app" || !appReady.value || !isKnownModule(module)) return;
+  if (!canAccessModule(module)) {
+    if (!router) await redirectForbiddenModule(module);
+    return;
+  }
+  if (!router) persistCurrentModule(module);
   await refreshCurrentModule(module, true);
 });
 
+function hasPermission(permission) {
+  return authContext.hasPermission(permission);
+}
+function canUsePlugin(pluginType, pluginCode = "") {
+  return authContext.canUsePlugin(pluginType, pluginCode);
+}
+function canManagePluginType(pluginType) {
+  return authContext.canManagePluginType(pluginType);
+}
+function hasAnyManagePluginScope() {
+  return authContext.hasAnyManagePluginScope();
+}
+function canAccessModule(moduleKey) {
+  return authContext.canAccessModule(moduleKey);
+}
+function routeModuleFromRouteName(name) {
+  const routeName = String(name || "");
+  if (routeName === "not-found") return "not-found";
+  return isKnownModule(routeName) ? routeName : "";
+}
+async function navigateToModule(moduleKey, options = {}) {
+  if (!isKnownModule(moduleKey)) return;
+  if (!router) {
+    fallbackModule.value = moduleKey;
+    persistCurrentModule(moduleKey);
+    return;
+  }
+  const target = { name: moduleKey, query: options.query || {} };
+  try {
+    if (options.replace) {
+      await router.replace(target);
+    } else if (route?.name !== moduleKey || route?.query?.forbidden) {
+      await router.push(target);
+    }
+  } catch {
+    // Ignore duplicated navigation and keep local module fallback in sync.
+  }
+}
+async function redirectForbiddenModule(moduleKey) {
+  if (!router || !isKnownModule(moduleKey)) return;
+  const fallback = modules.value.find((item) => item.key !== moduleKey)?.key || defaultModuleKey;
+  if (!isKnownModule(fallback)) return;
+  try {
+    await router.replace({ name: fallback, query: { forbidden: moduleKey } });
+  } catch {
+    fallbackModule.value = fallback;
+  }
+}
 function navCount(key) { return counts.value[key] || 0; }
 async function loadAuthStatus() {
   loginError.value = "";
-  const response = await requestJSON("/api/v1/auth", { auth: true });
-  Object.assign(auth, response);
-  if (!response.enabled || response.authenticated) {
+  appReady.value = false;
+  const response = await authContext.ensureAuthReady({ force: true });
+  if (!response.loginRequired || response.authenticated) {
     enterConsole();
+    ensureAccessibleDefaultModule();
+    ensureAccessiblePluginTab();
     await loadProtectedData();
+    appReady.value = true;
     return;
   }
   screen.value = "login";
@@ -667,23 +410,30 @@ async function submitLogin() {
   if (!username || !password.trim()) { loginError.value = "请输入用户名和密码"; return; }
   try {
     const response = await requestJSON("/api/v1/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
-    localStorage.setItem(tokenKey, response.token);
+    await authContext.setLoginToken(response.token);
     enterConsole();
+    ensureAccessibleDefaultModule();
+    ensureAccessiblePluginTab();
     await loadProtectedData();
+    appReady.value = true;
   } catch (error) {
-    localStorage.removeItem(tokenKey);
+    authContext.clearAuth();
     loginError.value = error.message;
     screen.value = "login";
   }
 }
 function enterConsole() {
-  currentModule.value = readStoredModule();
-  persistCurrentModule(currentModule.value);
+  if (!router) fallbackModule.value = readStoredModule();
   screen.value = "app";
 }
+async function loadCurrentUser() {
+  await authContext.reloadCurrentUser();
+  ensureAccessibleDefaultModule();
+  ensureAccessiblePluginTab();
+}
 function logout() {
-  localStorage.removeItem(tokenKey);
-  localStorage.removeItem(currentModuleKey);
+  appReady.value = false;
+  authContext.clearAuth();
   lastProtectedPayload.value = "";
   pluginCatalog.value = [];
   for (const type of Object.keys(pluginCatalogLoaded)) {
@@ -691,17 +441,27 @@ function logout() {
     pluginCatalogLoading[type] = false;
     pluginCatalogErrors[type] = "";
   }
+  if (router) {
+    router.replace({ name: defaultModuleKey }).catch(() => {});
+  } else {
+    fallbackModule.value = defaultModuleKey;
+  }
   screen.value = "login";
 }
-function selectModule(moduleKey) {
-  if (!isValidModule(moduleKey)) return;
+async function selectModule(moduleKey, navigate) {
+  if (!isValidModule(moduleKey) || !canAccessModule(moduleKey)) return;
   if (currentModule.value === moduleKey) {
     refreshCurrentModule(moduleKey, true);
     return;
   }
-  currentModule.value = moduleKey;
+  if (typeof navigate === "function") {
+    await navigate();
+    return;
+  }
+  await navigateToModule(moduleKey);
 }
 async function refreshCurrentModule(module, force = false) {
+  if (!canAccessModule(module)) return;
   if (module === "collect") {
     await Promise.all([loadCollectConfig(collectPagination.value.page || 1), loadPluginCatalog("input", force)]);
   }
@@ -715,19 +475,43 @@ async function refreshCurrentModule(module, force = false) {
     await loadSavedSearches(force);
   }
   if (module === "plugins") {
+    ensureAccessiblePluginTab();
+    if (!canAccessModule("plugins")) return;
     await loadPlugins(force);
     if (pluginManagementSupportsPagination[currentPluginTab.value]) await loadPluginCatalog(currentPluginTab.value, force);
+  }
+  if (module === "rbac") {
+    await loadRBACConfig(force);
   }
 }
 function readStoredModule() {
   const stored = localStorage.getItem(currentModuleKey);
-  return isValidModule(stored) ? stored : defaultModuleKey;
+  return isKnownModule(stored) ? stored : defaultModuleKey;
 }
 function persistCurrentModule(moduleKey) {
-  localStorage.setItem(currentModuleKey, isValidModule(moduleKey) ? moduleKey : defaultModuleKey);
+  localStorage.setItem(currentModuleKey, isKnownModule(moduleKey) ? moduleKey : defaultModuleKey);
 }
 function isValidModule(moduleKey) {
-  return modules.some((item) => item.key === moduleKey);
+  return isKnownModule(moduleKey);
+}
+function isKnownModule(moduleKey) {
+  return baseModules.some((item) => item.key === moduleKey);
+}
+function ensureAccessibleDefaultModule() {
+  const stored = localStorage.getItem(currentModuleKey);
+  if (canAccessModule(currentModule.value)) {
+    if (!router && !isKnownModule(stored)) persistCurrentModule(currentModule.value);
+    return;
+  }
+  if (router && isKnownModule(currentModule.value)) {
+    redirectForbiddenModule(currentModule.value);
+    return;
+  }
+  if (isKnownModule(stored)) return;
+  const first = modules.value[0]?.key;
+  if (first) {
+    navigateToModule(first, { replace: true });
+  }
 }
 function defaultListPagination(pageSize = 10) {
   return { page: 1, page_size: pageSize, total: 0, total_pages: 1 };
@@ -802,8 +586,19 @@ async function reloadIndexFirstPage() {
 }
 async function loadProtectedData() {
   try {
-    await Promise.all([loadCollectConfig(), loadIndexConfig(true), loadParseConfig(true), loadSavedSearches()]);
-    await loadPluginCatalog("input");
+    if (!currentUser.rbacEnabled) {
+      await Promise.all([loadCollectConfig(), loadIndexConfig(true), loadParseConfig(true), loadSavedSearches()]);
+      await loadPluginCatalog("input");
+      return;
+    }
+    const tasks = [];
+    if (canAccessModule("collect")) tasks.push(loadCollectConfig(), loadPluginCatalog("input"));
+    if (canAccessModule("index")) tasks.push(loadIndexConfig(true));
+    if (canAccessModule("parse")) tasks.push(loadParseConfig(true), loadPluginCatalog("parser"));
+    if (canAccessModule("search")) tasks.push(loadSavedSearches());
+    if (canAccessModule("plugins")) tasks.push(loadPlugins(true));
+    if (canAccessModule("rbac")) tasks.push(loadRBACConfig(true));
+    await Promise.all(tasks);
   } catch {
     lastProtectedPayload.value = "";
   }
@@ -839,7 +634,15 @@ async function loadIndexConfig(force = false, page = indexPagination.value.page 
   if (indexConfigLoaded.value && !force) return;
   try {
     const payload = await requestJSON(listURL("/api/v1/indexes", page, indexPageSize.value), { auth: true });
-    if (Array.isArray(payload.indexes)) indexes.value = payload.indexes.map(apiIndexToForm);
+    if (Array.isArray(payload.indexes)) {
+      const previousByName = new Map(indexes.value.map((item) => [item.name, item]));
+      indexes.value = payload.indexes.map((index) => {
+        const item = apiIndexToForm(index);
+        const previous = previousByName.get(item.name);
+        if (!previous) return item;
+        return { ...item, trend: previous.trend, trendOpen: previous.trendOpen, trendLoading: previous.trendLoading, trendError: previous.trendError };
+      });
+    }
     indexPagination.value = normalizeListPagination(payload.pagination, indexes.value.length, page, indexPageSize.value);
     indexConfigLoaded.value = true;
   } catch {
@@ -859,7 +662,292 @@ async function loadWriterRuntime(force = false) {
     writerRuntimeLoading.value = false;
   }
 }
+async function loadRBACConfig(force = false) {
+  if (rbacLoaded.value && !force) return;
+  rbacError.value = "";
+  try {
+    const tasks = [];
+    if (hasPermission("rbac:manage")) tasks.push(loadRBACUsers(), loadRBACRoles(), loadRBACPermissions(), loadIndexConfig(true).catch(() => {}));
+    await Promise.all(tasks);
+    rbacLoaded.value = true;
+  } catch (error) {
+    rbacLoaded.value = false;
+    rbacError.value = error.message || "用户与权限加载失败";
+  }
+}
+async function loadRBACUsers(page = rbacUserPagination.value.page || 1) {
+  const payload = await requestJSON(listURL("/api/v1/users", page, 20), { auth: true });
+  rbacUsers.value = Array.isArray(payload.users) ? payload.users : [];
+  rbacUserPagination.value = normalizeListPagination(payload.pagination, rbacUsers.value.length, page, 20);
+}
+async function loadRBACRoles() {
+  const payload = await requestJSON("/api/v1/roles", { auth: true });
+  rbacRoles.value = Array.isArray(payload.roles) ? payload.roles : [];
+}
+async function loadRBACPermissions() {
+  const payload = await requestJSON("/api/v1/permissions", { auth: true });
+  rbacPermissions.value = Array.isArray(payload.permissions) ? payload.permissions : [];
+}
+async function saveRBACUser() {
+  rbacUserError.value = "";
+  rbacNotice.value = "";
+  const validationError = validateRBACUserForm(rbacUserForm);
+  if (validationError) {
+    rbacUserError.value = validationError;
+    return;
+  }
+  try {
+    const isEdit = Boolean(editingRBACUserId.value);
+    const payload = {
+      username: String(rbacUserForm.username || "").trim(),
+      display_name: String(rbacUserForm.displayName || "").trim(),
+      status: rbacUserForm.status || "active",
+      role_ids: [...rbacUserForm.roleIds]
+    };
+    if (!isEdit) payload.password = rbacUserForm.password;
+    const saved = await requestJSON(isEdit ? `/api/v1/users/${encodeURIComponent(editingRBACUserId.value)}` : "/api/v1/users", {
+      auth: true,
+      method: isEdit ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    let next = saved;
+    if (isEdit) {
+      next = await requestJSON(`/api/v1/users/${encodeURIComponent(editingRBACUserId.value)}/roles`, {
+        auth: true,
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role_ids: [...rbacUserForm.roleIds] })
+      });
+      if (String(rbacUserForm.password || "").trim()) {
+        await setRBACUserPassword(editingRBACUserId.value, rbacUserForm.password);
+      }
+    } else {
+      adjustListPaginationTotal(rbacUserPagination, 1, 20);
+    }
+    rbacUsers.value = isEdit ? rbacUsers.value.map((item) => item.id === editingRBACUserId.value ? next : item) : [next, ...rbacUsers.value.filter((item) => item.id !== next.id)];
+    resetRBACUserForm();
+    rbacNotice.value = isEdit ? "用户已保存" : "用户已创建";
+  } catch (error) {
+    rbacUserError.value = error.message || "用户保存失败";
+  }
+}
+async function saveRBACRole() {
+  rbacRoleError.value = "";
+  rbacNotice.value = "";
+  const validationError = validateRBACRoleForm(rbacRoleForm);
+  if (validationError) {
+    rbacRoleError.value = validationError;
+    return;
+  }
+  try {
+    const isEdit = Boolean(editingRBACRoleId.value);
+    const permissionCodes = mergeUnique([...rbacRoleForm.permissionCodes]);
+    const saved = await requestJSON(isEdit ? `/api/v1/roles/${encodeURIComponent(editingRBACRoleId.value)}` : "/api/v1/roles", {
+      auth: true,
+      method: isEdit ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role_code: String(rbacRoleForm.roleCode || "").trim(),
+        role_name: String(rbacRoleForm.roleName || "").trim(),
+        description: String(rbacRoleForm.description || "").trim(),
+        status: rbacRoleForm.status || "active",
+        permission_codes: permissionCodes,
+        index_scopes: parseIndexScopesText(rbacRoleForm.indexScopesText),
+        plugin_scopes: parsePluginScopesText(rbacRoleForm.pluginScopesText)
+      })
+    });
+    rbacRoles.value = isEdit ? rbacRoles.value.map((item) => item.id === editingRBACRoleId.value ? saved : item) : [saved, ...rbacRoles.value.filter((item) => item.id !== saved.id)];
+    resetRBACRoleForm();
+    rbacNotice.value = isEdit ? "角色已保存" : "角色已创建";
+  } catch (error) {
+    rbacRoleError.value = error.message || "角色保存失败";
+  }
+}
+function validateRBACUserForm(form) {
+  if (!String(form.username || "").trim()) return "用户名为必填项";
+  if (!String(form.displayName || "").trim()) return "全称为必填项";
+  const password = String(form.password || "");
+  const confirmPassword = String(form.confirmPassword || "");
+  if (!editingRBACUserId.value && !password.trim()) return "设置密码为必填项";
+  if ((!editingRBACUserId.value || password.trim() || confirmPassword.trim()) && password !== confirmPassword) return "两次输入的密码不一致";
+  if (!String(form.status || "").trim()) return "状态为必填项";
+  return "";
+}
+function validateRBACRoleForm(form) {
+  if (!String(form.roleCode || "").trim()) return "角色编码为必填项";
+  if (!String(form.roleName || "").trim()) return "角色名称为必填项";
+  if (!String(form.status || "").trim()) return "状态为必填项";
+  return "";
+}
+function splitRBACLines(value) {
+  return String(value || "").split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+}
+function mergeUnique(items) {
+  return Array.from(new Set(items.map((item) => String(item || "").trim()).filter(Boolean)));
+}
+function parseIndexScopesText(value) {
+  const out = {};
+  String(value || "").split("\n").map((line) => line.trim()).filter(Boolean).forEach((line) => {
+    const [action, patterns] = splitScopeLine(line);
+    if (!action || !patterns) return;
+    out[action] = mergeUnique([...(out[action] || []), ...splitRBACLines(patterns)]);
+  });
+  return out;
+}
+function parsePluginScopesText(value) {
+  const out = {};
+  String(value || "").split("\n").map((line) => line.trim()).filter(Boolean).forEach((line) => {
+    const [action, bindings] = splitScopeLine(line);
+    if (!action || !bindings) return;
+    out[action] = [
+      ...(out[action] || []),
+      ...splitRBACLines(bindings).map(parsePluginScopeBinding).filter(Boolean)
+    ];
+  });
+  return out;
+}
+function splitScopeLine(line) {
+  const index = String(line || "").indexOf(":");
+  if (index < 0) return ["", ""];
+  return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
+}
+function parsePluginScopeBinding(value) {
+  const [pluginType, pluginCode] = String(value || "").split("/");
+  if (!pluginType || !pluginCode) return null;
+  return { plugin_type: normalizePluginType(pluginType), plugin_code: pluginCode.trim() };
+}
+function roleNames(roles = []) {
+  return Array.isArray(roles) && roles.length ? roles.map((role) => role.role_name || role.role_code).join("、") : "-";
+}
+function compactList(items = []) {
+  return Array.isArray(items) && items.length ? items.join("\n") : "-";
+}
+function formatIndexScopes(scopes = {}) {
+  const lines = Object.entries(scopes || {}).flatMap(([action, patterns]) => (Array.isArray(patterns) ? patterns : []).map((pattern) => `${action}:${pattern}`));
+  return lines.length ? lines.join("\n") : "-";
+}
+function formatPluginScopes(scopes = {}) {
+  const lines = Object.entries(scopes || {}).flatMap(([action, items]) => (Array.isArray(items) ? items : []).map((item) => `${action}:${item.plugin_type}/${item.plugin_code}`));
+  return lines.length ? lines.join("\n") : "-";
+}
+function permissionTestId(code) {
+  return String(code || "").replace(/[^a-zA-Z0-9_-]+/g, "-");
+}
+function p2PermissionDisplayName(code) {
+  return {
+    "datasource:read": "采集配置入口",
+    "parse_rule:read": "解析配置入口",
+    "index:read": "索引配置入口",
+    "index:manage": "索引管理能力",
+    "search:execute": "搜索页入口",
+    "rbac:manage": "用户与权限管理"
+  }[code] || code;
+}
+function resetRBACUserForm() {
+  editingRBACUserId.value = "";
+  assignReactive(rbacUserForm, defaultRBACUserForm());
+}
+function editRBACUser(user) {
+  editingRBACUserId.value = user.id;
+  assignReactive(rbacUserForm, {
+    username: user.username || "",
+    displayName: user.display_name || user.displayName || "",
+    password: "",
+    confirmPassword: "",
+    status: user.status || "active",
+    roleIds: userRoleIds(user.roles),
+    createRoleForUser: false,
+    forcePasswordChange: false
+  });
+}
+function userRoleIds(roles = []) {
+  return Array.isArray(roles) ? roles.map((role) => role.id || role.role_id || role.role_code).filter(Boolean) : [];
+}
+async function toggleRBACUserStatus(user) {
+  rbacUserError.value = "";
+  const nextStatus = user.status === "active" ? "disabled" : "active";
+  try {
+    const saved = await requestJSON(`/api/v1/users/${encodeURIComponent(user.id)}`, {
+      auth: true,
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: user.display_name || user.displayName || "", status: nextStatus })
+    });
+    rbacUsers.value = rbacUsers.value.map((item) => item.id === user.id ? { ...item, ...saved, status: nextStatus } : item);
+    rbacNotice.value = nextStatus === "active" ? "用户已启用" : "用户已禁用";
+  } catch (error) {
+    rbacUserError.value = error.message || "用户状态更新失败";
+  }
+}
+async function resetRBACUserPassword(user) {
+  const password = window.prompt("请输入新密码");
+  if (!String(password || "").trim()) return;
+  rbacUserError.value = "";
+  try {
+    await setRBACUserPassword(user.id, password);
+    rbacNotice.value = "用户密码已重置";
+  } catch (error) {
+    rbacUserError.value = error.message || "密码重置失败";
+  }
+}
+async function setRBACUserPassword(userID, password) {
+  return requestJSON(`/api/v1/users/${encodeURIComponent(userID)}/password`, {
+    auth: true,
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password })
+  });
+}
+async function deleteRBACUser(user) {
+  rbacUserError.value = "";
+  try {
+    await requestJSON(`/api/v1/users/${encodeURIComponent(user.id)}`, { auth: true, method: "DELETE" });
+    rbacUsers.value = rbacUsers.value.filter((item) => item.id !== user.id);
+    adjustListPaginationTotal(rbacUserPagination, -1, 20);
+    if (editingRBACUserId.value === user.id) resetRBACUserForm();
+    rbacNotice.value = "用户已删除";
+  } catch (error) {
+    rbacUserError.value = error.message || "用户删除失败";
+  }
+}
+function resetRBACRoleForm() {
+  editingRBACRoleId.value = "";
+  assignReactive(rbacRoleForm, defaultRBACRoleForm());
+}
+function editRBACRole(role) {
+  editingRBACRoleId.value = role.id;
+  assignReactive(rbacRoleForm, {
+    roleCode: role.role_code || "",
+    roleName: role.role_name || "",
+    description: role.description || "",
+    status: role.status || "active",
+    permissionCodes: Array.isArray(role.permission_codes) ? role.permission_codes.filter((code) => p2AssignablePermissionCodes.includes(code)) : [],
+    permissionsText: compactList(role.permission_codes) === "-" ? "" : compactList(role.permission_codes),
+    indexScopesText: formatIndexScopes(role.index_scopes) === "-" ? "" : formatIndexScopes(role.index_scopes),
+    pluginScopesText: formatPluginScopes(role.plugin_scopes) === "-" ? "" : formatPluginScopes(role.plugin_scopes)
+  });
+}
+async function deleteRBACRole(role) {
+  rbacRoleError.value = "";
+  try {
+    await requestJSON(`/api/v1/roles/${encodeURIComponent(role.id)}`, { auth: true, method: "DELETE" });
+    rbacRoles.value = rbacRoles.value.filter((item) => item.id !== role.id);
+    if (editingRBACRoleId.value === role.id) resetRBACRoleForm();
+    rbacNotice.value = "角色已删除";
+  } catch (error) {
+    rbacRoleError.value = error.message || "角色删除失败";
+  }
+}
 async function loadPlugins(force = false, type = currentPluginTab.value, page = pluginPaginationByType[type]?.page || 1) {
+  ensureAccessiblePluginTab();
+  type = normalizePluginType(type || currentPluginTab.value);
+  if (!canManagePluginType(type)) {
+    pluginManagementItems[type] = [];
+    pluginPaginationByType[type] = normalizeListPagination({}, 0, 1, pluginPageSizeByType[type] || 10);
+    pluginManagementLoaded[type] = true;
+    return;
+  }
   if (pluginManagementLoaded[type] && !force && pluginPaginationByType[type]?.page === page) return;
   try {
     const pageSize = pluginPageSizeByType[type] || 10;
@@ -873,7 +961,7 @@ async function loadPlugins(force = false, type = currentPluginTab.value, page = 
     const items = dedupePlugins(rawItems.map(apiPluginToForm).filter(isProductVisiblePlugin));
     const paginated = Boolean(payload.pagination);
     if (!paginated && new Set(items.map((item) => item.plugin_type)).size > 1) {
-      for (const tab of pluginTabs) {
+      for (const tab of pluginTabs.value) {
         const typedItems = items.filter((item) => item.plugin_type === tab.key);
         pluginManagementItems[tab.key] = typedItems;
         pluginPaginationByType[tab.key] = normalizeListPagination({}, typedItems.length, 1, pageSize);
@@ -905,6 +993,7 @@ async function loadPlugins(force = false, type = currentPluginTab.value, page = 
   }
 }
 async function loadPluginCatalog(type = "input", force = false) {
+  type = normalizePluginType(type);
   if (pluginCatalogLoaded[type] && !force) return;
   pluginCatalogLoading[type] = true;
   pluginCatalogErrors[type] = "";
@@ -929,30 +1018,13 @@ async function retryInputPluginCatalog() {
 async function retryParserPluginCatalog() {
   await loadPluginCatalog("parser", true);
 }
-async function requestJSON(url, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (options.auth) {
-    const token = localStorage.getItem(tokenKey);
-    if (token) headers.Authorization = `Bearer ${token}`;
-  }
-  const response = await fetch(url, { ...options, headers });
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error(errorMessage(payload, response.statusText));
-  return payload;
-}
-function errorMessage(payload, fallback) {
-  if (payload?.error?.message) {
-    return payload.error.code ? `${payload.error.code}: ${payload.error.message}` : payload.error.message;
-  }
-  if (typeof payload.error === "string") return payload.error;
-  return fallback || "请求失败";
-}
+function defaultRBACUserForm() { return { username: "", displayName: "", password: "", confirmPassword: "", status: "active", roleIds: [], createRoleForUser: false, forcePasswordChange: true }; }
+function defaultRBACRoleForm() { return { roleCode: "", roleName: "", description: "", status: "active", permissionCodes: [], permissionsText: "", indexScopesText: "", pluginScopesText: "", inheritedRoleIds: [] }; }
 function defaultInputForm() { return { name: "", status: "active", plugin: "Syslog", collectorPort: "5514", transportProtocol: "UDP", encoding: "UTF-8", logFilterEnabled: "off", logFilterRegex: "", brokers: "", topic: "", consumerGroup: "", securityProtocol: "PLAINTEXT", startOffset: "earliest", encodingKafka: "UTF-8", logFilterEnabledKafka: "off", logFilterRegexKafka: "" }; }
 function defaultRuleForm() { return { name: "", plugin: "正则解析插件", pluginCode: "regex", pluginVersion: "1.0.0", dataSourceName: "", inputRoute: "internal_raw_topic", outputIndex: "app", priority: 100, sampleLog: "", regexPattern: "", jsonArrayMode: "json_string", jsonInvalidPolicy: "continue", kvPairDelimiter: "空格", kvDelimiter: "=", kvQuote: '"', delimitedDelimiter: ",", delimitedQuote: '"', delimitedFields: "field1,field2,field3", propsConf: "" }; }
 function defaultIndexForm() { return { name: "", ttl: 30, status: "active" }; }
 function assignReactive(target, source) { Object.keys(target).forEach((key) => delete target[key]); Object.assign(target, source); }
-const currentPluginTabLabel = computed(() => pluginTabs.find((item) => item.key === currentPluginTab.value)?.label || "插件列表");
+const currentPluginTabLabel = computed(() => basePluginTabs.find((item) => item.key === currentPluginTab.value)?.label || "插件列表");
 const filteredPlugins = computed(() => pluginManagementItems[currentPluginTab.value] || []);
 const pluginReferenceCount = computed(() => Number(selectedPlugin.value?.references?.count || 0));
 const pluginReferenceItems = computed(() => Array.isArray(selectedPlugin.value?.references?.items) ? selectedPlugin.value.references.items : []);
@@ -970,11 +1042,17 @@ const pluginEffectiveRuntimeText = computed(() => {
 });
 const showPluginExecutionAudits = computed(() => selectedPlugin.value?.plugin_type === "search_command" && !isBuiltInPlugin(selectedPlugin.value || {}));
 async function selectPluginTab(tab) {
+  if (!canManagePluginType(tab)) return;
   currentPluginTab.value = tab;
   pluginUploadStatus.value = "";
   pluginUploadError.value = "";
   clearPluginDetail();
   await loadPlugins(false, tab, pluginPaginationByType[tab]?.page || 1);
+}
+function ensureAccessiblePluginTab() {
+  if (canManagePluginType(currentPluginTab.value)) return;
+  const first = pluginTabs.value[0]?.key;
+  if (first) currentPluginTab.value = first;
 }
 function pluginTypeCount(type) {
   return Number(pluginTypeCounts[type] || 0);
@@ -1600,6 +1678,16 @@ function parserPluginDisplayName(plugin) {
   if (plugin.plugin_code === "json-parser") return "JSON";
   return plugin.name || plugin.plugin_code;
 }
+function parserPluginIcon(plugin) {
+  if (plugin.plugin_code === "regex") return "REG";
+  if (plugin.plugin_code === "json-parser") return "JSON";
+  return String(plugin.plugin_code || "P").slice(0, 4).toUpperCase();
+}
+function parserPluginIconClass(plugin) {
+  if (plugin.plugin_code === "regex") return "icon-regex";
+  if (plugin.plugin_code === "json-parser") return "icon-json";
+  return "icon-kv";
+}
 async function previewParse() {
   const request = ruleFormToAPI(ruleForm);
   try {
@@ -1641,11 +1729,15 @@ async function saveRule() {
   const request = ruleFormToAPI(ruleForm);
   const url = editingRuleId.value ? `/api/v1/parse-rules/${encodeURIComponent(editingRuleId.value)}` : "/api/v1/parse-rules";
   const method = editingRuleId.value ? "PUT" : "POST";
-  const saved = await requestJSON(url, { auth: true, method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
-  const item = apiRuleToForm(saved);
-  if (!editingRuleId.value) adjustListPaginationTotal(parsePagination, 1, parsePageSize.value);
-  parseRules.value = editingRuleId.value ? parseRules.value.map((current) => current.id === editingRuleId.value ? item : current) : [item, ...parseRules.value];
-  resetRuleForm();
+  try {
+    const saved = await requestJSON(url, { auth: true, method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+    const item = apiRuleToForm(saved);
+    if (!editingRuleId.value) adjustListPaginationTotal(parsePagination, 1, parsePageSize.value);
+    parseRules.value = editingRuleId.value ? parseRules.value.map((current) => current.id === editingRuleId.value ? item : current) : [item, ...parseRules.value];
+    resetRuleForm();
+  } catch (error) {
+    ruleFormError.value = error.message || "解析规则保存失败";
+  }
 }
 function openRuleForm() {
   clearRuleForm();
@@ -1779,6 +1871,14 @@ async function deleteIndex(id) {
 function resetIndexForm() {
   clearIndexForm();
   showIndexForm.value = false;
+}
+function handleConfigDrawerOutsidePointerDown(event) {
+  if (!showInputForm.value && !showRuleForm.value && !showIndexForm.value) return;
+  const target = event.target;
+  if (target?.closest?.(".config-drawer")) return;
+  if (showInputForm.value) resetInputForm();
+  if (showRuleForm.value) resetRuleForm();
+  if (showIndexForm.value) resetIndexForm();
 }
 function apiIndexToForm(index) {
   const name = index.index_name || index.name || "";
@@ -2202,10 +2302,242 @@ function formatTimelineTick(value) {
   if (Number.isNaN(date.getTime())) return String(value || "").slice(0, 16);
   return `${pad2(date.getMonth() + 1)}/${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
+
+function setPositivePageSize(target, value, fallback = 10) {
+  const parsed = Number(value);
+  target.value = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+function setCollectPageSize(value) { setPositivePageSize(collectPageSize, value, 10); }
+function setParsePageSize(value) { setPositivePageSize(parsePageSize, value, 10); }
+function setIndexPageSize(value) { setPositivePageSize(indexPageSize, value, 10); }
+function setSearchPageSize(value) { setPositivePageSize(searchPageSize, value, 20); }
+function setCurrentPluginPageSize(value) { currentPluginPageSize.value = Number(value) || 10; }
+function setSearchQuery(value) { searchQuery.value = value; }
+function setSearchTime(value) { searchTime.value = value; }
+
+const panelBindings = computed(() => ({
+  inputPluginBadge: inputPluginBadge.value,
+  inputFormNotice: inputFormNotice.value,
+  pluginCatalogErrors,
+  pluginCatalogLoading,
+  retryInputPluginCatalog,
+  retryParserPluginCatalog,
+  showInputForm: showInputForm.value,
+  openInputForm,
+  editingInputId: editingInputId.value,
+  clearInputForm,
+  saveInput,
+  inputForm,
+  inputNameError: inputNameError.value,
+  canUseSyslogInput: canUseSyslogInput.value,
+  kafkaInputPlugin: kafkaInputPlugin.value,
+  selectInputPlugin,
+  inputPortError: inputPortError.value,
+  kafkaFormFields: kafkaFormFields.value,
+  isKafkaFieldVisible,
+  checkKafkaConnectivity,
+  kafkaConnectivityStatus: kafkaConnectivityStatus.value,
+  inputFormError: inputFormError.value,
+  resetInputForm,
+  inputConfigs: inputConfigs.value,
+  selectedRuntimeId: selectedRuntimeId.value,
+  collectRuntimeSummary,
+  collectListenerPortLabel,
+  collectCanStop,
+  collectCanStart,
+  selectRuntimeSource,
+  toggleInputStatus,
+  loadRuntimeDetail,
+  retryRuntimeSource,
+  editInput,
+  deleteInput,
+  runtimeDetail: runtimeDetail.value,
+  selectedRuntimeName: selectedRuntimeName.value,
+  runtimeLoading: runtimeLoading.value,
+  runtimeError: runtimeError.value,
+  runtimeDetailSummary: runtimeDetailSummary.value,
+  formatRuntimeNumber,
+  formatRuntimeValue,
+  formatFullTime,
+  runtimeTopology,
+  collectPagination: collectPagination.value,
+  visibleCollectPages: visibleCollectPages.value,
+  totalCollectPages: totalCollectPages.value,
+  goCollectPage,
+  collectPageSize: collectPageSize.value,
+  setCollectPageSize,
+  reloadCollectFirstPage,
+  showRuleForm: showRuleForm.value,
+  openRuleForm,
+  editingRuleId: editingRuleId.value,
+  clearRuleForm,
+  saveRule,
+  ruleForm,
+  applyDataSourceRoute,
+  businessIndexes: businessIndexes.value,
+  parserPluginOptions: parserPluginOptions.value.map((plugin) => ({
+    ...plugin,
+    label: parserPluginDisplayName(plugin),
+    icon: parserPluginIcon(plugin),
+    iconClass: parserPluginIconClass(plugin)
+  })),
+  selectParserPlugin,
+  previewParse,
+  previewRows: previewRows.value,
+  ruleFormError: ruleFormError.value,
+  resetRuleForm,
+  parseRules: parseRules.value,
+  editRule,
+  deleteRule,
+  parsePagination: parsePagination.value,
+  visibleParsePages: visibleParsePages.value,
+  totalParsePages: totalParsePages.value,
+  goParsePage,
+  parsePageSize: parsePageSize.value,
+  setParsePageSize,
+  reloadParseFirstPage,
+  loadWriterRuntime,
+  writerRuntimeLoading: writerRuntimeLoading.value,
+  writerRuntimeError: writerRuntimeError.value,
+  writerRuntime: writerRuntime.value,
+  formatWriterEPS,
+  formatNumber,
+  formatBytes,
+  formatPercent,
+  showIndexForm: showIndexForm.value,
+  openIndexForm,
+  editingIndexId: editingIndexId.value,
+  clearIndexForm,
+  saveIndex,
+  indexForm,
+  indexFormError: indexFormError.value,
+  resetIndexForm,
+  indexes: indexes.value,
+  loadIndexTrend,
+  editIndex,
+  deleteIndex,
+  indexTrendYTicks,
+  indexTrendPointLabel,
+  indexTrendBarHeight,
+  indexTrendTicks,
+  formatIndexDateTime,
+  indexPagination: indexPagination.value,
+  visibleIndexPages: visibleIndexPages.value,
+  totalIndexPages: totalIndexPages.value,
+  goIndexPage,
+  indexPageSize: indexPageSize.value,
+  setIndexPageSize,
+  reloadIndexFirstPage,
+  searchQuery: searchQuery.value,
+  setSearchQuery,
+  searchTime: searchTime.value,
+  setSearchTime,
+  timeOptions,
+  runSearchFirstPage,
+  saveSearch,
+  timelineBars: timelineBars.value,
+  timelineYAxisLabels: timelineYAxisLabels.value,
+  timelineStatus: timelineStatus.value,
+  timelineTooltip,
+  timelineTicks: timelineTicks.value,
+  savedSearches: savedSearches.value,
+  savedOpen: savedOpen.value,
+  toggleSavedSearches,
+  savedSearchError: savedSearchError.value,
+  useSearch,
+  deleteSavedSearch,
+  resultStatus: resultStatus.value,
+  resultMode: resultMode.value,
+  statsFields: statsFields.value,
+  searchResults: searchResults.value,
+  formatStatsCell,
+  eventRowKey,
+  toggleEventDetail,
+  isEventExpanded,
+  formatDetailValue,
+  searchPagination: searchPagination.value,
+  isSearchLoading: isSearchLoading.value,
+  totalSearchPages: totalSearchPages.value,
+  visibleSearchPages: visibleSearchPages.value,
+  goSearchPage,
+  searchPageSize: searchPageSize.value,
+  setSearchPageSize,
+  searchPageSizes,
+  pluginTabs: pluginTabs.value,
+  currentPluginTab: currentPluginTab.value,
+  selectPluginTab,
+  pluginTypeCount,
+  canManageCurrentPluginTab: canManageCurrentPluginTab.value,
+  onPluginFileChange,
+  pluginUploadFileName: pluginUploadFileName.value,
+  uploadPluginPackage,
+  pluginUploadStatus: pluginUploadStatus.value,
+  pluginUploadError: pluginUploadError.value,
+  currentPluginTabLabel: currentPluginTabLabel.value,
+  filteredPlugins: filteredPlugins.value,
+  isBuiltInPlugin,
+  isPluginEnabled,
+  pluginStatusLabel,
+  isPluginDetailOpen,
+  loadPluginDetail,
+  setPluginStatus,
+  deletePlugin,
+  selectedPlugin: selectedPlugin.value,
+  pluginReferenceCount: pluginReferenceCount.value,
+  pluginEffectiveRuntimeConfig: pluginEffectiveRuntimeConfig.value,
+  pluginEffectiveRuntimeText: pluginEffectiveRuntimeText.value,
+  pluginSchemaText: pluginSchemaText.value,
+  pluginUISchemaText: pluginUISchemaText.value,
+  pluginReferenceItems: pluginReferenceItems.value,
+  referenceTypeLabel,
+  showPluginExecutionAudits: showPluginExecutionAudits.value,
+  pluginExecutionAuditLoading: pluginExecutionAuditLoading.value,
+  pluginExecutionAuditError: pluginExecutionAuditError.value,
+  pluginExecutionAudits: pluginExecutionAudits.value,
+  isPluginReferenced,
+  pluginActionStatus: pluginActionStatus.value,
+  pluginActionError: pluginActionError.value,
+  currentPluginPagination: currentPluginPagination.value,
+  visiblePluginPages: visiblePluginPages.value,
+  totalPluginPages: totalPluginPages.value,
+  goPluginPage,
+  currentPluginPageSize: currentPluginPageSize.value,
+  setCurrentPluginPageSize,
+  reloadPluginFirstPage,
+  rbacNotice: rbacNotice.value,
+  rbacError: rbacError.value,
+  hasPermission,
+  saveRBACUser,
+  rbacUserForm,
+  rbacUserPagination: rbacUserPagination.value,
+  editingRBACUserId: editingRBACUserId.value,
+  rbacRoles: rbacRoles.value,
+  rbacUserError: rbacUserError.value,
+  resetRBACUserForm,
+  rbacUsers: rbacUsers.value,
+  roleNames,
+  editRBACUser,
+  toggleRBACUserStatus,
+  resetRBACUserPassword,
+  deleteRBACUser,
+  saveRBACRole,
+  rbacRoleForm,
+  editingRBACRoleId: editingRBACRoleId.value,
+  assignableRBACPermissions: assignableRBACPermissions.value,
+  permissionTestId,
+  rbacRoleError: rbacRoleError.value,
+  resetRBACRoleForm,
+  formatIndexScopes,
+  formatPluginScopes,
+  compactList,
+  editRBACRole,
+  deleteRBACRole,
+  listPageSizes
+}));
 </script>
 
-<style scoped>
-:global(*){box-sizing:border-box}:global(:root){--xdp-bg:#070925;--xdp-bg2:#12091f;--xdp-ink:#f8fbff;--xdp-muted:#a5b2d1;--xdp-line:rgba(151,173,255,.18);--xdp-glass:rgba(10,15,45,.78);--xdp-glass2:rgba(19,27,72,.82);--xdp-orange:#ffad00;--xdp-coral:#ff6848;--xdp-pink:#ff1f85;--xdp-cyan:#55dfff;--xdp-green:#67f28a;--xdp-danger:#ff5f61;--xdp-radius:22px;--xdp-shadow:0 24px 80px rgba(0,0,0,.42);--xdp-sans:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif;--xdp-mono:"SFMono-Regular","Menlo","Consolas",monospace}:global(body){margin:0;min-height:100vh;font-family:var(--xdp-sans);background:#070925}button,input,select,textarea{font:inherit}button{cursor:pointer}.login-shell,.console-shell{min-height:100vh;position:relative;overflow-x:hidden;color:var(--xdp-ink);background:radial-gradient(circle at 74% 8%,rgba(255,31,133,.24),transparent 24rem),radial-gradient(circle at 10% 28%,rgba(85,223,255,.15),transparent 26rem),linear-gradient(115deg,#071348 0%,#080a2b 44%,#15061e 100%)}.page-grid{position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent 0 78px,rgba(255,115,49,.13) 79px,transparent 81px),repeating-linear-gradient(0deg,transparent 0 138px,rgba(85,223,255,.045) 139px,transparent 141px);opacity:.58;pointer-events:none}.login-shell{display:grid;grid-template-rows:auto 1fr auto;gap:38px;padding:22px clamp(18px,4vw,56px) 28px}.topbar,.login-layout,footer,.console-page{position:relative;z-index:1}.topbar{min-height:62px;display:flex;align-items:center;gap:14px;border:1px solid var(--xdp-line);border-radius:999px;padding:0 18px 0 24px;background:rgba(5,8,30,.66);backdrop-filter:blur(18px);box-shadow:0 18px 58px rgba(0,0,0,.3)}.login-shell>.topbar{width:min(1500px,100%);margin:0 auto}.brand{display:flex;align-items:center;gap:9px;margin-right:auto;color:#fff;font-size:22px;font-weight:500;letter-spacing:-.03em}.brand-mark{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--xdp-orange),var(--xdp-pink));color:#12071c;font-weight:600;box-shadow:0 0 30px rgba(255,78,86,.38)}.pill{border:1px solid rgba(255,255,255,.13);border-radius:999px;padding:8px 12px;color:#e8eeff;font:700 12px var(--xdp-mono);letter-spacing:.08em}.muted,.status-line,.result-meta,.note,.form-hint{color:var(--xdp-muted)}.login-layout{width:min(1280px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,1.08fr) minmax(380px,480px);gap:28px;align-items:stretch}.hero-card,.login-card,.card,.main-panel{border:1px solid var(--xdp-line);border-radius:var(--xdp-radius);background:linear-gradient(180deg,rgba(20,29,76,.82),rgba(6,10,35,.74));box-shadow:var(--xdp-shadow);backdrop-filter:blur(18px)}.hero-card{min-height:520px;position:relative;display:flex;flex-direction:column;justify-content:center;overflow:hidden;padding:clamp(30px,5vw,58px)}.hero-card:after{content:"";position:absolute;right:-92px;bottom:-76px;width:360px;height:260px;border:1px solid rgba(255,255,255,.08);border-radius:60px;background:linear-gradient(135deg,rgba(255,173,0,.12),rgba(255,31,133,.14));transform:rotate(18deg)}.eyebrow{margin:0;color:#c8d4f5;font:700 13px var(--xdp-mono);letter-spacing:.1em;text-transform:uppercase}.hero-card h1{position:relative;z-index:1;margin:18px 0 0;display:grid;gap:12px}.gradient-text{display:inline-block;width:max-content;padding-right:.18em;background:linear-gradient(90deg,var(--xdp-orange),var(--xdp-coral) 46%,var(--xdp-pink));-webkit-background-clip:text;background-clip:text;color:transparent;font-size:clamp(48px,6.4vw,84px);font-weight:700;line-height:1;letter-spacing:-.025em;text-shadow:0 18px 70px rgba(255,54,117,.26)}.hero-card strong{max-width:650px;color:#fff;font-size:clamp(24px,2.8vw,36px);font-weight:700;line-height:1.16;letter-spacing:-.05em}.lede{position:relative;z-index:1;max-width:560px;margin:24px 0 0;color:var(--xdp-muted);font-size:17px;line-height:1.7}.chip-row{position:relative;z-index:1;display:flex;flex-wrap:wrap;gap:10px;margin-top:34px}.chip-row span,.count,.badge,.mode-pill{border:1px solid rgba(85,223,255,.24);border-radius:999px;background:rgba(85,223,255,.12);color:#dffaff;padding:4px 9px;font-size:12px;font-weight:800}.chip-row span{border-color:rgba(255,255,255,.14);background:rgba(255,255,255,.07);color:#e8eeff;padding:8px 12px}.login-card{align-self:center;min-height:470px;padding:28px}.card-head,.result-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:16px;color:#fff;font-weight:800}.login-card h2{margin:8px 0 0;color:#fff;font-size:30px;line-height:1.1;letter-spacing:-.04em}.status-dot{width:14px;height:14px;margin-top:4px;border-radius:999px;background:var(--xdp-green);box-shadow:0 0 0 7px rgba(103,242,138,.1),0 0 28px rgba(103,242,138,.68)}.login-form,.form-grid{display:grid;gap:16px}.login-form label,.form-grid label{display:grid;gap:8px;color:#dce5fb;font-size:13px;font-weight:700}.login-form input,.field,.select,textarea,.search-box{width:100%;border:1px solid rgba(255,255,255,.12);border-radius:14px;outline:none;padding:0 16px;color:#fff;background:rgba(1,4,22,.52);transition:border-color .16s ease,box-shadow .16s ease,background .16s ease}.login-form input,.field,.select{height:44px}.login-form input{height:56px}textarea{min-height:106px;padding:12px 14px;resize:vertical;font-family:var(--xdp-mono)}.props-editor{min-height:150px}.login-form input:focus,.field:focus,.select:focus,textarea:focus,.search-box:focus{border-color:rgba(85,223,255,.78);background:rgba(3,9,34,.74);box-shadow:0 0 0 4px rgba(85,223,255,.1)}.login-form button,.btn,.logout,.topbar-nav button{border:0;cursor:pointer;font-weight:700}.login-form button{height:56px;margin-top:6px;border-radius:14px;background:linear-gradient(90deg,var(--xdp-orange),var(--xdp-coral) 46%,var(--xdp-pink));color:#14071c;font-size:18px;box-shadow:0 18px 42px rgba(255,57,116,.26)}.error-box{margin:16px 0 0;border:1px solid rgba(255,95,97,.35);border-radius:14px;padding:10px 12px;color:#ffcbc6;background:rgba(255,95,97,.1)}.btn.ghost,.logout{border:1px solid rgba(85,223,255,.28);color:#dffaff;background:rgba(85,223,255,.1)}footer{justify-self:center;color:#7f8fb7;font-size:13px}.console-page{width:min(1500px,calc(100vw - 44px));margin:0 auto;padding:22px 0 56px}.console-topbar{position:sticky;top:16px;z-index:20}.console-shell .brand{margin-right:0;flex:0 0 auto}.topbar-nav{display:flex;gap:6px;margin-left:4px;margin-right:auto}.topbar-nav button{color:#b7c2df;background:transparent}.topbar-nav button{border-radius:999px;padding:8px 12px;font-size:14px}.topbar-nav button.active,.topbar-nav button:hover{color:#fff;background:rgba(85,223,255,.12)}.user{color:#bdc9e8;font-size:13px}.logout{border-radius:999px;padding:8px 12px}.workspace{display:block;margin-top:28px}.main-panel{min-width:0;padding:22px}.panel-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.panel-header h2{margin:0;font-size:30px;letter-spacing:-.04em}.content-grid{display:grid;grid-template-columns:minmax(360px,.9fr) minmax(460px,1.1fr);gap:18px}.card{min-width:0;padding:18px}.plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.plugin-card{min-height:80px;display:flex;align-items:center;gap:10px;border:1px solid rgba(255,255,255,.12);border-radius:18px;color:#dce5fb;background:rgba(255,255,255,.055);padding:14px;font-weight:800}.plugin-card.active{border-color:rgba(85,223,255,.78);color:#fff;background:rgba(85,223,255,.12);box-shadow:0 0 30px rgba(85,223,255,.1)}.plugin-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;color:#100b22;background:linear-gradient(135deg,var(--xdp-cyan),var(--xdp-green));font:800 12px var(--xdp-mono)}.param-panel,.conditional-panel,.advanced-panel,.preview-box,.saved-drawer{border:1px solid rgba(255,255,255,.1);border-radius:18px;background:rgba(255,255,255,.045);padding:14px}.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.unit-field{display:grid;grid-template-columns:1fr 46px;align-items:center}.unit-field .field{border-radius:14px 0 0 14px}.unit-field span{display:grid;place-items:center;height:44px;border:1px solid rgba(255,255,255,.12);border-left:0;border-radius:0 14px 14px 0;color:var(--xdp-muted);background:rgba(255,255,255,.06)}.actions{display:flex;flex-wrap:wrap;gap:10px}.btn{min-height:40px;border-radius:999px;padding:0 16px;color:#071127;background:linear-gradient(135deg,var(--xdp-cyan),var(--xdp-green));box-shadow:0 14px 34px rgba(85,223,255,.18)}.table-wrap{width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;color:#e7edff;font-size:13px}th,td{border-bottom:1px solid rgba(255,255,255,.08);padding:12px 10px;vertical-align:top;text-align:left}th{color:#c8d4f5;background:rgba(255,255,255,.05)}tr:hover td{background:rgba(85,223,255,.045)}code,.search-box{font-family:var(--xdp-mono)}.multiline-code{white-space:pre-wrap}.muted-code{color:var(--xdp-muted)}.row-actions{display:flex;gap:8px}.link-btn{border:0;padding:0;color:var(--xdp-cyan);background:transparent;font-weight:800}.link-btn.delete{color:#ff9ea0}.search-layout{display:grid;gap:16px}.search-row{display:grid;grid-template-columns:minmax(320px,1fr) 180px auto auto;gap:10px;align-items:center}.search-box{min-height:46px;resize:none;line-height:24px;padding:10px 16px;overflow:auto}.time-help{color:var(--xdp-muted)}.timeline{height:118px;display:flex;align-items:end;gap:8px;border:1px solid rgba(255,255,255,.09);border-radius:18px;padding:14px;background:repeating-linear-gradient(0deg,transparent 0 20px,rgba(255,255,255,.045) 21px,transparent 22px),rgba(255,255,255,.035)}.bar{flex:1;min-width:12px;border-radius:10px 10px 2px 2px;background:linear-gradient(180deg,var(--xdp-cyan),var(--xdp-pink))}.search-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px}.saved-summary{display:flex;align-items:center;gap:10px;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 12px;background:rgba(255,255,255,.045);color:var(--xdp-muted)}.saved-summary strong,.result-head>div>span{color:#fff}.drawer-head{display:flex;justify-content:space-between;margin-bottom:10px;font-weight:800}@media (max-width:980px){.content-grid,.login-layout{grid-template-columns:1fr}.topbar-nav{flex-wrap:wrap;margin-left:0}.search-row{grid-template-columns:1fr}}@media (max-width:720px){.login-shell{gap:22px;padding:14px 14px 22px}.topbar{min-height:auto;align-items:flex-start;border-radius:24px;padding:14px}.pill,.user{display:none}.hero-card{min-height:auto;padding:24px}.gradient-text{font-size:clamp(44px,13vw,64px)}.hero-card strong{font-size:22px}.login-card{min-height:auto;padding:22px}.console-page{width:min(100% - 24px,1500px)}.two,.plugin-grid{grid-template-columns:1fr}}
+<style>
+*{box-sizing:border-box}:root{--xdp-bg:#070925;--xdp-bg2:#12091f;--xdp-ink:#f8fbff;--xdp-muted:#a5b2d1;--xdp-line:rgba(151,173,255,.18);--xdp-glass:rgba(10,15,45,.78);--xdp-glass2:rgba(19,27,72,.82);--xdp-orange:#ffad00;--xdp-coral:#ff6848;--xdp-pink:#ff1f85;--xdp-cyan:#55dfff;--xdp-green:#67f28a;--xdp-danger:#ff5f61;--xdp-radius:22px;--xdp-shadow:0 24px 80px rgba(0,0,0,.42);--xdp-sans:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif;--xdp-mono:"SFMono-Regular","Menlo","Consolas",monospace}body{margin:0;min-height:100vh;font-family:var(--xdp-sans);background:#070925}button,input,select,textarea{font:inherit}button{cursor:pointer}.login-shell,.console-shell{min-height:100vh;position:relative;overflow-x:hidden;color:var(--xdp-ink);background:radial-gradient(circle at 74% 8%,rgba(255,31,133,.24),transparent 24rem),radial-gradient(circle at 10% 28%,rgba(85,223,255,.15),transparent 26rem),linear-gradient(115deg,#071348 0%,#080a2b 44%,#15061e 100%)}.page-grid{position:absolute;inset:0;background:repeating-linear-gradient(90deg,transparent 0 78px,rgba(255,115,49,.13) 79px,transparent 81px),repeating-linear-gradient(0deg,transparent 0 138px,rgba(85,223,255,.045) 139px,transparent 141px);opacity:.58;pointer-events:none}.login-shell{display:grid;grid-template-rows:auto 1fr auto;gap:38px;padding:22px clamp(18px,4vw,56px) 28px}.topbar,.login-layout,footer,.console-page{position:relative;z-index:1}.topbar{min-height:62px;display:flex;align-items:center;gap:14px;border:1px solid var(--xdp-line);border-radius:999px;padding:0 18px 0 24px;background:rgba(5,8,30,.66);backdrop-filter:blur(18px);box-shadow:0 18px 58px rgba(0,0,0,.3)}.login-shell>.topbar{width:min(1500px,100%);margin:0 auto}.brand{display:flex;align-items:center;gap:9px;margin-right:auto;color:#fff;font-size:22px;font-weight:500;letter-spacing:-.03em}.brand-mark{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--xdp-orange),var(--xdp-pink));color:#12071c;font-weight:600;box-shadow:0 0 30px rgba(255,78,86,.38)}.pill{border:1px solid rgba(255,255,255,.13);border-radius:999px;padding:8px 12px;color:#e8eeff;font:700 12px var(--xdp-mono);letter-spacing:.08em}.muted,.status-line,.result-meta,.note,.form-hint{color:var(--xdp-muted)}.login-layout{width:min(1280px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,1.08fr) minmax(380px,480px);gap:28px;align-items:stretch}.hero-card,.login-card,.card,.main-panel{border:1px solid var(--xdp-line);border-radius:var(--xdp-radius);background:linear-gradient(180deg,rgba(20,29,76,.82),rgba(6,10,35,.74));box-shadow:var(--xdp-shadow);backdrop-filter:blur(18px)}.hero-card{min-height:520px;position:relative;display:flex;flex-direction:column;justify-content:center;overflow:hidden;padding:clamp(30px,5vw,58px)}.hero-card:after{content:"";position:absolute;right:-92px;bottom:-76px;width:360px;height:260px;border:1px solid rgba(255,255,255,.08);border-radius:60px;background:linear-gradient(135deg,rgba(255,173,0,.12),rgba(255,31,133,.14));transform:rotate(18deg)}.eyebrow{margin:0;color:#c8d4f5;font:700 13px var(--xdp-mono);letter-spacing:.1em;text-transform:uppercase}.hero-card h1{position:relative;z-index:1;margin:18px 0 0;display:grid;gap:12px}.gradient-text{display:inline-block;width:max-content;padding-right:.18em;background:linear-gradient(90deg,var(--xdp-orange),var(--xdp-coral) 46%,var(--xdp-pink));-webkit-background-clip:text;background-clip:text;color:transparent;font-size:clamp(48px,6.4vw,84px);font-weight:700;line-height:1;letter-spacing:-.025em;text-shadow:0 18px 70px rgba(255,54,117,.26)}.hero-card strong{max-width:650px;color:#fff;font-size:clamp(24px,2.8vw,36px);font-weight:700;line-height:1.16;letter-spacing:-.05em}.lede{position:relative;z-index:1;max-width:560px;margin:24px 0 0;color:var(--xdp-muted);font-size:17px;line-height:1.7}.chip-row{position:relative;z-index:1;display:flex;flex-wrap:wrap;gap:10px;margin-top:34px}.chip-row span,.count,.badge,.mode-pill{border:1px solid rgba(85,223,255,.24);border-radius:999px;background:rgba(85,223,255,.12);color:#dffaff;padding:4px 9px;font-size:12px;font-weight:800}.chip-row span{border-color:rgba(255,255,255,.14);background:rgba(255,255,255,.07);color:#e8eeff;padding:8px 12px}.login-card{align-self:center;min-height:470px;padding:28px}.card-head,.result-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:16px;color:#fff;font-weight:800}.login-card h2{margin:8px 0 0;color:#fff;font-size:30px;line-height:1.1;letter-spacing:-.04em}.status-dot{width:14px;height:14px;margin-top:4px;border-radius:999px;background:var(--xdp-green);box-shadow:0 0 0 7px rgba(103,242,138,.1),0 0 28px rgba(103,242,138,.68)}.login-form,.form-grid{display:grid;gap:16px}.login-form label,.form-grid label{display:grid;gap:8px;color:#dce5fb;font-size:13px;font-weight:700}.login-form input,.field,.select,textarea,.search-box{width:100%;border:1px solid rgba(255,255,255,.12);border-radius:14px;outline:none;padding:0 16px;color:#fff;background:rgba(1,4,22,.52);transition:border-color .16s ease,box-shadow .16s ease,background .16s ease}.login-form input,.field,.select{height:44px}.login-form input{height:56px}textarea{min-height:106px;padding:12px 14px;resize:vertical;font-family:var(--xdp-mono)}.props-editor{min-height:150px}.login-form input:focus,.field:focus,.select:focus,textarea:focus,.search-box:focus{border-color:rgba(85,223,255,.78);background:rgba(3,9,34,.74);box-shadow:0 0 0 4px rgba(85,223,255,.1)}.login-form button,.btn,.logout,.topbar-nav button{border:0;cursor:pointer;font-weight:700}.login-form button{height:56px;margin-top:6px;border-radius:14px;background:linear-gradient(90deg,var(--xdp-orange),var(--xdp-coral) 46%,var(--xdp-pink));color:#14071c;font-size:18px;box-shadow:0 18px 42px rgba(255,57,116,.26)}.error-box{margin:16px 0 0;border:1px solid rgba(255,95,97,.35);border-radius:14px;padding:10px 12px;color:#ffcbc6;background:rgba(255,95,97,.1)}.btn.ghost,.logout{border:1px solid rgba(85,223,255,.28);color:#dffaff;background:rgba(85,223,255,.1)}footer{justify-self:center;color:#7f8fb7;font-size:13px}.console-page{width:min(1500px,calc(100vw - 44px));margin:0 auto;padding:22px 0 56px}.console-topbar{position:sticky;top:16px;z-index:20}.console-shell .brand{margin-right:0;flex:0 0 auto}.topbar-nav{display:flex;gap:6px;margin-left:4px;margin-right:auto}.topbar-nav button{color:#b7c2df;background:transparent}.topbar-nav button{border-radius:999px;padding:8px 12px;font-size:14px}.topbar-nav button.active,.topbar-nav button:hover{color:#fff;background:rgba(85,223,255,.12)}.user{color:#bdc9e8;font-size:13px}.logout{border-radius:999px;padding:8px 12px}.workspace{display:block;margin-top:28px}.main-panel{min-width:0;padding:22px}.panel-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.panel-header h2{margin:0;font-size:30px;letter-spacing:-.04em}.content-grid{display:grid;grid-template-columns:minmax(360px,.9fr) minmax(460px,1.1fr);gap:18px}.card{min-width:0;padding:18px}.plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.plugin-card{min-height:80px;display:flex;align-items:center;gap:10px;border:1px solid rgba(255,255,255,.12);border-radius:18px;color:#dce5fb;background:rgba(255,255,255,.055);padding:14px;font-weight:800}.plugin-card.active{border-color:rgba(85,223,255,.78);color:#fff;background:rgba(85,223,255,.12);box-shadow:0 0 30px rgba(85,223,255,.1)}.plugin-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;color:#100b22;background:linear-gradient(135deg,var(--xdp-cyan),var(--xdp-green));font:800 12px var(--xdp-mono)}.param-panel,.conditional-panel,.advanced-panel,.preview-box,.saved-drawer{border:1px solid rgba(255,255,255,.1);border-radius:18px;background:rgba(255,255,255,.045);padding:14px}.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.unit-field{display:grid;grid-template-columns:1fr 46px;align-items:center}.unit-field .field{border-radius:14px 0 0 14px}.unit-field span{display:grid;place-items:center;height:44px;border:1px solid rgba(255,255,255,.12);border-left:0;border-radius:0 14px 14px 0;color:var(--xdp-muted);background:rgba(255,255,255,.06)}.actions{display:flex;flex-wrap:wrap;gap:10px}.btn{min-height:40px;border-radius:999px;padding:0 16px;color:#071127;background:linear-gradient(135deg,var(--xdp-cyan),var(--xdp-green));box-shadow:0 14px 34px rgba(85,223,255,.18)}.table-wrap{width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;color:#e7edff;font-size:13px}th,td{border-bottom:1px solid rgba(255,255,255,.08);padding:12px 10px;vertical-align:top;text-align:left}th{color:#c8d4f5;background:rgba(255,255,255,.05)}tr:hover td{background:rgba(85,223,255,.045)}code,.search-box{font-family:var(--xdp-mono)}.multiline-code{white-space:pre-wrap}.muted-code{color:var(--xdp-muted)}.row-actions{display:flex;gap:8px}.link-btn{border:0;padding:0;color:var(--xdp-cyan);background:transparent;font-weight:800}.link-btn.delete{color:#ff9ea0}.search-layout{display:grid;gap:16px}.search-row{display:grid;grid-template-columns:minmax(320px,1fr) 180px auto auto;gap:10px;align-items:center}.search-box{min-height:46px;resize:none;line-height:24px;padding:10px 16px;overflow:auto}.time-help{color:var(--xdp-muted)}.timeline{height:118px;display:flex;align-items:end;gap:8px;border:1px solid rgba(255,255,255,.09);border-radius:18px;padding:14px;background:repeating-linear-gradient(0deg,transparent 0 20px,rgba(255,255,255,.045) 21px,transparent 22px),rgba(255,255,255,.035)}.bar{flex:1;min-width:12px;border-radius:10px 10px 2px 2px;background:linear-gradient(180deg,var(--xdp-cyan),var(--xdp-pink))}.search-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px}.saved-summary{display:flex;align-items:center;gap:10px;border:1px solid rgba(255,255,255,.1);border-radius:999px;padding:8px 12px;background:rgba(255,255,255,.045);color:var(--xdp-muted)}.saved-summary strong,.result-head>div>span{color:#fff}.drawer-head{display:flex;justify-content:space-between;margin-bottom:10px;font-weight:800}@media (max-width:980px){.content-grid,.login-layout{grid-template-columns:1fr}.topbar-nav{flex-wrap:wrap;margin-left:0}.search-row{grid-template-columns:1fr}}@media (max-width:720px){.login-shell{gap:22px;padding:14px 14px 22px}.topbar{min-height:auto;align-items:flex-start;border-radius:24px;padding:14px}.pill,.user{display:none}.hero-card{min-height:auto;padding:24px}.gradient-text{font-size:clamp(44px,13vw,64px)}.hero-card strong{font-size:22px}.login-card{min-height:auto;padding:22px}.console-page{width:min(100% - 24px,1500px)}.two,.plugin-grid{grid-template-columns:1fr}}
 
 .console-shell[data-theme="ops-console"]{--ops-bg:#f4f7fb;--ops-surface:#ffffff;--ops-surface-soft:#f8fbfd;--ops-ink:#1f2d3d;--ops-muted:#657589;--ops-line:#d9e2ea;--ops-topbar:#18212a;--ops-sidebar:#eef3f7;--ops-primary:#13bfb4;--ops-primary-dark:#0f8f89;--ops-blue:#2878b8;--ops-green:#28b76f;--ops-shadow:0 18px 48px rgba(29,49,70,.12);color:var(--ops-ink);background:linear-gradient(135deg,#eef4f7 0%,#f8fbfc 46%,#edf5f3 100%)}.console-shell[data-theme="ops-console"] .page-grid{background:repeating-linear-gradient(90deg,transparent 0 94px,rgba(23,129,138,.08) 95px,transparent 96px),repeating-linear-gradient(0deg,transparent 0 128px,rgba(40,120,184,.055) 129px,transparent 130px);opacity:.85}.console-shell[data-theme="ops-console"] .console-topbar{border-color:#24313d;background:var(--ops-topbar);box-shadow:0 12px 28px rgba(24,33,42,.22)}.console-shell[data-theme="ops-console"] .brand,.console-shell[data-theme="ops-console"] .user{color:#edf6fb}.console-shell[data-theme="ops-console"] .console-brand-mark{background:linear-gradient(135deg,var(--ops-primary),var(--ops-blue));color:#fff;box-shadow:0 0 0 1px rgba(255,255,255,.12),0 10px 24px rgba(19,191,180,.28)}.console-shell[data-theme="ops-console"] .topbar-nav button{color:#c8d4df}.console-shell[data-theme="ops-console"] .topbar-nav button.active,.console-shell[data-theme="ops-console"] .topbar-nav button:hover{color:#fff;background:rgba(19,191,180,.18)}.console-shell[data-theme="ops-console"] .logout{border-color:rgba(19,191,180,.38);color:#e7fffb;background:rgba(19,191,180,.12)}.console-shell[data-theme="ops-console"] .sidebar,.console-shell[data-theme="ops-console"] .main-panel,.console-shell[data-theme="ops-console"] .card{border-color:var(--ops-line);background:rgba(255,255,255,.94);box-shadow:var(--ops-shadow);backdrop-filter:none}.console-shell[data-theme="ops-console"] .sidebar-title{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .sidebar button{color:#435365}.console-shell[data-theme="ops-console"] .sidebar button.active,.console-shell[data-theme="ops-console"] .sidebar button:hover{color:#0d766f;background:#dff7f4}.console-shell[data-theme="ops-console"] .panel-header h2{display:flex;align-items:center;gap:10px;color:#162635}.console-shell[data-theme="ops-console"] .page-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:#fff;font:800 11px var(--xdp-mono);letter-spacing:.04em;box-shadow:0 10px 24px rgba(19,191,180,.2)}.console-shell[data-theme="ops-console"] .page-icon-collect{background:linear-gradient(135deg,#0fb7a9,#28b76f)}.console-shell[data-theme="ops-console"] .page-icon-parse{background:linear-gradient(135deg,#2878b8,#2ab7ca)}.console-shell[data-theme="ops-console"] .page-icon-index{background:linear-gradient(135deg,#1f6fa4,#4f86d9)}.console-shell[data-theme="ops-console"] .page-icon-search{background:linear-gradient(135deg,#0f8f89,#1f6fa4)}.console-shell[data-theme="ops-console"] .badge,.console-shell[data-theme="ops-console"] .count,.console-shell[data-theme="ops-console"] .mode-pill{border-color:#b9e8e4;background:#e4f8f5;color:#08776f}.console-shell[data-theme="ops-console"] .card-head,.console-shell[data-theme="ops-console"] .result-head{color:#1f2d3d}.console-shell[data-theme="ops-console"] .muted,.console-shell[data-theme="ops-console"] .status-line,.console-shell[data-theme="ops-console"] .result-meta,.console-shell[data-theme="ops-console"] .note,.console-shell[data-theme="ops-console"] .form-hint{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .form-grid label{color:#344558}.console-shell[data-theme="ops-console"] .field,.console-shell[data-theme="ops-console"] .select,.console-shell[data-theme="ops-console"] textarea,.console-shell[data-theme="ops-console"] .search-box{border-color:#cfd9e3;color:#1c2c3d;background:#fff}.console-shell[data-theme="ops-console"] .field:focus,.console-shell[data-theme="ops-console"] .select:focus,.console-shell[data-theme="ops-console"] textarea:focus,.console-shell[data-theme="ops-console"] .search-box:focus{border-color:var(--ops-primary);background:#fff;box-shadow:0 0 0 4px rgba(19,191,180,.14)}.console-shell[data-theme="ops-console"] .param-panel,.console-shell[data-theme="ops-console"] .conditional-panel,.console-shell[data-theme="ops-console"] .advanced-panel,.console-shell[data-theme="ops-console"] .preview-box,.console-shell[data-theme="ops-console"] .saved-drawer{border-color:#d9e4ec;background:#f8fbfd}.console-shell[data-theme="ops-console"] .plugin-card{border-color:#d6e1e9;color:#243447;background:#fff}.console-shell[data-theme="ops-console"] .plugin-card.active{border-color:var(--ops-primary);color:#0d4d4b;background:#e8fbf8;box-shadow:0 10px 28px rgba(19,191,180,.16)}.console-shell[data-theme="ops-console"] .plugin-icon{color:#fff;box-shadow:0 8px 20px rgba(40,120,184,.16)}.console-shell[data-theme="ops-console"] .icon-syslog{background:linear-gradient(135deg,#0fb7a9,#28b76f)}.console-shell[data-theme="ops-console"] .icon-kafka{background:linear-gradient(135deg,#2878b8,#38bdf8)}.console-shell[data-theme="ops-console"] .icon-regex{background:linear-gradient(135deg,#1f6fa4,#2ab7ca)}.console-shell[data-theme="ops-console"] .icon-json{background:linear-gradient(135deg,#13bfb4,#28b76f)}.console-shell[data-theme="ops-console"] .icon-delimited{background:linear-gradient(135deg,#4f86d9,#2ab7ca)}.console-shell[data-theme="ops-console"] .icon-kv{background:linear-gradient(135deg,#0f8f89,#4f86d9)}.console-shell[data-theme="ops-console"] .btn{color:#fff;background:linear-gradient(135deg,var(--ops-primary),var(--ops-green));box-shadow:0 12px 24px rgba(19,191,180,.22)}.console-shell[data-theme="ops-console"] .btn.ghost{border-color:#b8e5e1;color:#08776f;background:#eefbf9}.console-shell[data-theme="ops-console"] table{color:#223246}.console-shell[data-theme="ops-console"] th{color:#405168;background:#edf3f7}.console-shell[data-theme="ops-console"] td{border-color:#e5ebf1}.console-shell[data-theme="ops-console"] tr:hover td{background:#f1fbfa}.console-shell[data-theme="ops-console"] code{color:#0f6378}.console-shell[data-theme="ops-console"] .link-btn{color:#087eab}.console-shell[data-theme="ops-console"] .link-btn.delete{color:#c2410c}.console-shell[data-theme="ops-console"] .unit-field span{border-color:#cfd9e3;color:var(--ops-muted);background:#edf3f7}.console-shell[data-theme="ops-console"] .time-help{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .timeline{border-color:#d8e4ec;background:repeating-linear-gradient(0deg,transparent 0 20px,rgba(40,120,184,.08) 21px,transparent 22px),#fff}.console-shell[data-theme="ops-console"] .bar{background:linear-gradient(180deg,#2878b8,#13bfb4 62%,#28b76f)}.console-shell[data-theme="ops-console"] .saved-summary{border-color:#d9e4ec;background:#fff;color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .saved-summary strong,.console-shell[data-theme="ops-console"] .result-head>div>span{color:#1f2d3d}
 .login-shell[data-theme="ops-login"]{--ops-bg:#f4f7fb;--ops-surface:#ffffff;--ops-surface-soft:#f8fbfd;--ops-ink:#1f2d3d;--ops-muted:#657589;--ops-line:#d9e2ea;--ops-topbar:#18212a;--ops-primary:#13bfb4;--ops-primary-dark:#0f8f89;--ops-blue:#2878b8;--ops-green:#28b76f;--ops-shadow:0 18px 48px rgba(29,49,70,.12);color:var(--ops-ink);background:linear-gradient(135deg,#eef4f7 0%,#f8fbfc 46%,#edf5f3 100%)}.login-shell[data-theme="ops-login"] .page-grid{background:repeating-linear-gradient(90deg,transparent 0 94px,rgba(23,129,138,.08) 95px,transparent 96px),repeating-linear-gradient(0deg,transparent 0 128px,rgba(40,120,184,.055) 129px,transparent 130px);opacity:.85}.login-shell[data-theme="ops-login"] .topbar{border-color:#24313d;background:var(--ops-topbar);box-shadow:0 12px 28px rgba(24,33,42,.22);backdrop-filter:none}.login-shell[data-theme="ops-login"] .brand{color:#edf6fb}.login-shell[data-theme="ops-login"] .brand-mark{background:linear-gradient(135deg,var(--ops-primary),var(--ops-blue));color:#fff;box-shadow:0 0 0 1px rgba(255,255,255,.12),0 10px 24px rgba(19,191,180,.28)}.login-shell[data-theme="ops-login"] .pill{border-color:rgba(19,191,180,.38);color:#e7fffb;background:rgba(19,191,180,.12)}.login-shell[data-theme="ops-login"] .pill.muted{color:#c8d4df}.login-shell[data-theme="ops-login"] .hero-card,.login-shell[data-theme="ops-login"] .login-card{border-color:var(--ops-line);background:rgba(255,255,255,.94);box-shadow:var(--ops-shadow);backdrop-filter:none}.login-shell[data-theme="ops-login"] .hero-card:after{border-color:rgba(19,191,180,.18);background:linear-gradient(135deg,rgba(19,191,180,.18),rgba(40,120,184,.12))}.login-shell[data-theme="ops-login"] .eyebrow{color:var(--ops-muted)}.login-shell[data-theme="ops-login"] .gradient-text{background:linear-gradient(90deg,var(--ops-primary),var(--ops-blue) 58%,var(--ops-green));-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 18px 70px rgba(19,191,180,.16)}.login-shell[data-theme="ops-login"] .hero-card strong,.login-shell[data-theme="ops-login"] .login-card h2{color:#162635}.login-shell[data-theme="ops-login"] .lede,.login-shell[data-theme="ops-login"] footer{color:var(--ops-muted)}.login-shell[data-theme="ops-login"] .chip-row span{border-color:var(--ops-line);color:#315567;background:#fff}.login-shell[data-theme="ops-login"] .login-form label{color:#344558}.login-shell[data-theme="ops-login"] .login-form input{border-color:#cfd9e3;color:#1c2c3d;background:#fff}.login-shell[data-theme="ops-login"] .login-form input::placeholder{color:#9aa8b7}.login-shell[data-theme="ops-login"] .login-form input:focus{border-color:var(--ops-primary);background:#fff;box-shadow:0 0 0 4px rgba(19,191,180,.14)}.login-shell[data-theme="ops-login"] .login-form button{color:#fff;background:linear-gradient(135deg,var(--ops-primary),var(--ops-green));box-shadow:0 14px 28px rgba(19,191,180,.24)}.login-shell[data-theme="ops-login"] .login-form button:hover{box-shadow:0 18px 34px rgba(19,191,180,.3)}.login-shell[data-theme="ops-login"] .login-form button:focus-visible,.login-shell[data-theme="ops-login"] .btn.ghost:focus-visible{outline:3px solid rgba(19,191,180,.28);outline-offset:3px}.login-shell[data-theme="ops-login"] .status-dot{background:var(--ops-green);box-shadow:0 0 0 7px rgba(40,183,111,.12),0 0 28px rgba(40,183,111,.46)}.login-shell[data-theme="ops-login"] .error-box{border-color:rgba(220,91,75,.28);color:#b43f32;background:rgba(220,91,75,.08)}.login-shell[data-theme="ops-login"] .btn.ghost{border-color:#b8e5e1;color:#08776f;background:#eefbf9}.timeline.empty{align-items:center;justify-content:center}.timeline-empty{color:var(--xdp-muted);font-weight:800}.bar{display:flex;align-items:flex-start;justify-content:center;padding-top:5px;color:#f6fbff;font:800 11px var(--xdp-mono)}.bar span{opacity:.9}.console-shell[data-theme="ops-console"] .bar{color:#fff}
@@ -2225,4 +2557,8 @@ function formatTimelineTick(value) {
 .content-grid.list-first{grid-template-columns:1fr}
 .writer-runtime-card{display:grid;gap:14px}.writer-runtime-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.writer-runtime-grid>div{display:grid;gap:5px;border:1px solid rgba(255,255,255,.09);border-radius:15px;padding:12px;background:rgba(1,4,22,.22)}.writer-runtime-grid span{color:var(--xdp-muted);font-size:12px;font-weight:800}.writer-runtime-grid strong{color:#fff;font-size:16px;word-break:break-all}.writer-runtime-grid small{color:var(--xdp-muted);font-size:12px;word-break:break-all}.console-shell[data-theme="ops-console"] .writer-runtime-grid>div{border-color:#d9e4ec;background:#fff}.console-shell[data-theme="ops-console"] .writer-runtime-grid span,.console-shell[data-theme="ops-console"] .writer-runtime-grid small{color:var(--ops-muted)}.console-shell[data-theme="ops-console"] .writer-runtime-grid strong{color:#1f2d3d}@media (max-width:1100px){.writer-runtime-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:720px){.writer-runtime-grid{grid-template-columns:1fr}}
 .catalog-load-error{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:-4px 0 18px;border:1px solid rgba(255,95,97,.35);border-radius:14px;padding:10px 12px;color:#ffcbc6;background:rgba(255,95,97,.1)}.catalog-load-error .btn{min-height:34px;padding:0 13px;box-shadow:none}.catalog-load-error .btn:disabled{cursor:not-allowed;opacity:.55}.console-shell[data-theme="ops-console"] .catalog-load-error{border-color:#efc1b9;color:#a63b2f;background:#fff3f1}.console-shell[data-theme="ops-console"] .catalog-load-error .btn.ghost{border-color:#e5b7af;color:#a63b2f;background:#fff}
+.rbac-tabs{margin-bottom:18px}.rbac-grid{grid-template-columns:1fr}.rbac-card-actions{display:flex;align-items:center;gap:12px;margin-left:auto}.rbac-card-actions .btn{min-height:38px;padding:0 16px}.compact-form{margin-bottom:18px}.checkbox-panel{display:grid;gap:8px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.04)}.check-row{display:flex!important;grid-template-columns:none!important;align-items:center;gap:8px!important;color:inherit!important;font-size:13px!important;font-weight:700!important}.check-row input{width:16px;height:16px;accent-color:var(--xdp-cyan)}.rbac-modal-backdrop{position:fixed;z-index:80;inset:0;display:grid;place-items:start center;overflow:auto;padding:76px 22px;background:rgba(14,24,34,.28);backdrop-filter:blur(8px)}.rbac-modal{width:min(1040px,calc(100vw - 44px));display:grid;gap:0;overflow:hidden;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:rgba(12,18,34,.96);box-shadow:0 26px 70px rgba(0,0,0,.32)}.rbac-role-modal{width:min(1120px,calc(100vw - 44px))}.rbac-modal-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:20px 24px;border-bottom:1px solid rgba(255,255,255,.1)}.rbac-modal-head h3{margin:0;color:#fff;font-size:22px}.rbac-modal-close{display:grid;place-items:center;width:36px;height:36px;border:1px solid rgba(255,255,255,.14);border-radius:999px;color:#dffaff;background:rgba(255,255,255,.06);font-size:22px;line-height:1;cursor:pointer}.rbac-modal-body{display:grid;gap:16px;padding:22px 24px}.rbac-modal-footer{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:16px 24px;border-top:1px solid rgba(255,255,255,.1)}.rbac-option-panel{align-content:center}.rbac-transfer{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:stretch;gap:14px}.rbac-transfer-col{min-width:0;min-height:260px;display:grid;align-content:start;gap:8px;border:1px solid rgba(255,255,255,.1);border-radius:16px;padding:12px;background:rgba(255,255,255,.04)}.rbac-transfer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}.rbac-transfer-head strong{color:#fff}.rbac-list-item{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:10px 12px;color:#eaf6ff;background:rgba(255,255,255,.05);text-align:left;cursor:pointer}.rbac-list-item span,.rbac-list-item code{min-width:0;overflow-wrap:anywhere}.rbac-list-item:hover{border-color:rgba(85,223,255,.45);background:rgba(85,223,255,.1)}.rbac-list-item.selected{border-color:rgba(103,242,138,.28);background:rgba(103,242,138,.08)}.rbac-modal-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.rbac-modal-tabs button{border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:12px;color:#dce5fb;background:rgba(255,255,255,.055);font-weight:800}.rbac-modal-tabs .tab-step{display:inline-grid;place-items:center;width:20px;height:20px;margin-right:6px;border-radius:999px;background:rgba(85,223,255,.12);color:inherit;font-size:12px}.rbac-modal-tabs button.active{border-color:rgba(85,223,255,.78);color:#fff;background:rgba(85,223,255,.12)}.rbac-modal-section{display:grid;gap:10px}.console-shell[data-theme="ops-console"] .page-icon-rbac{background:linear-gradient(135deg,#0f8f89,#4f86d9)}.console-shell[data-theme="ops-console"] .checkbox-panel{border-color:#d9e4ec;background:#f8fbfd}.console-shell[data-theme="ops-console"] .check-row input{accent-color:var(--ops-primary)}.console-shell[data-theme="ops-console"] .rbac-modal-backdrop{background:rgba(17,31,43,.18);backdrop-filter:blur(6px)}.console-shell[data-theme="ops-console"] .rbac-modal{border-color:#d9e4ec;background:#fff;box-shadow:0 30px 80px rgba(29,49,70,.22)}.console-shell[data-theme="ops-console"] .rbac-modal-head,.console-shell[data-theme="ops-console"] .rbac-modal-footer{border-color:#e5ebf1}.console-shell[data-theme="ops-console"] .rbac-modal-head h3,.console-shell[data-theme="ops-console"] .rbac-transfer-head strong{color:#1f2d3d}.console-shell[data-theme="ops-console"] .rbac-modal-close{border-color:#cfd9e3;color:#08776f;background:#eefbf9}.console-shell[data-theme="ops-console"] .rbac-transfer-col{border-color:#d9e4ec;background:#f8fbfd}.console-shell[data-theme="ops-console"] .rbac-list-item{border-color:#d9e4ec;color:#223246;background:#fff}.console-shell[data-theme="ops-console"] .rbac-list-item:hover{border-color:#9ddbd5;background:#eefbf9}.console-shell[data-theme="ops-console"] .rbac-list-item.selected{border-color:#aee1c9;background:#e6f8ef}.console-shell[data-theme="ops-console"] .rbac-modal-tabs button{border-color:#d6e1e9;color:#243447;background:#fff}.console-shell[data-theme="ops-console"] .rbac-modal-tabs button.active{border-color:var(--ops-primary);color:#0d4d4b;background:#e8fbf8}@media (max-width:780px){.rbac-modal-backdrop{padding:20px 10px}.rbac-modal,.rbac-role-modal{width:calc(100vw - 20px)}.rbac-transfer,.rbac-modal-tabs{grid-template-columns:1fr}.rbac-card-actions{align-items:flex-end;flex-direction:column}}
+.rbac-drawer{z-index:60;width:min(680px,calc(100vw - 44px));padding:0!important;display:flex;flex-direction:column;overflow:hidden}.rbac-role-drawer{width:min(760px,calc(100vw - 44px))}.rbac-drawer .rbac-modal,.console-shell[data-theme="ops-console"] .rbac-drawer .rbac-modal{width:auto;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:0;border-radius:0;background:transparent;box-shadow:none}.rbac-drawer .rbac-modal-head{padding:18px 22px;border-bottom:1px solid rgba(255,255,255,.1)}.rbac-drawer .rbac-modal-body{min-height:0;overflow:auto;padding:20px 22px}.rbac-drawer .rbac-modal-footer{position:sticky;bottom:0;z-index:2;justify-content:center;padding:16px 22px;border-top:1px solid rgba(255,255,255,.1);background:rgba(12,18,34,.96)}.console-shell[data-theme="ops-console"] .rbac-drawer .rbac-modal-head,.console-shell[data-theme="ops-console"] .rbac-drawer .rbac-modal-footer{border-color:#e5ebf1}.console-shell[data-theme="ops-console"] .rbac-drawer .rbac-modal-footer{background:#fff}@media (max-width:720px){.rbac-drawer,.rbac-role-drawer{top:0;right:0;bottom:0;width:100vw;max-height:none;border-radius:0}.rbac-transfer{grid-template-columns:1fr}}
+.rbac-transfer-col{height:320px;min-height:320px;overflow:auto}.rbac-drawer{bottom:auto;max-height:calc(100vh - 132px)}.rbac-drawer .rbac-modal,.console-shell[data-theme="ops-console"] .rbac-drawer .rbac-modal{height:auto}.rbac-drawer .rbac-modal-head{flex:0 0 auto}.rbac-drawer .rbac-modal-body{flex:0 1 auto;align-content:start;gap:14px}.rbac-role-drawer .rbac-modal-section,.rbac-role-drawer [data-testid="role-inheritance"],.rbac-role-drawer [data-testid="role-permissions"]{min-height:190px}.rbac-role-drawer [data-testid="role-index-list"]{min-height:160px}.rbac-drawer .rbac-modal-footer{flex:0 0 auto;position:relative;bottom:auto;justify-content:center;border-top:0;padding:8px 22px 20px;background:transparent}.console-shell[data-theme="ops-console"] .rbac-drawer .rbac-modal-footer{background:transparent}@media (max-width:720px){.rbac-transfer-col{height:auto;min-height:220px}.rbac-drawer,.rbac-role-drawer{bottom:0;max-height:none}.rbac-role-drawer .rbac-modal-section,.rbac-role-drawer [data-testid="role-inheritance"],.rbac-role-drawer [data-testid="role-permissions"],.rbac-role-drawer [data-testid="role-index-list"]{min-height:0}}
+.rbac-role-drawer .rbac-modal-body{grid-template-rows:auto auto auto 292px auto auto;align-content:start}.rbac-role-tab-frame{height:292px;min-height:292px;display:grid;align-items:start;overflow:hidden}.rbac-role-tab-panel{grid-area:1/1;width:100%;height:100%;min-height:100%!important;overflow:auto;align-content:start}.rbac-role-tab-panel .props-editor{min-height:160px}.rbac-drawer .rbac-modal-footer{margin-top:2px;padding:0;background:transparent!important;border-top:0!important;box-shadow:none}.rbac-drawer .rbac-modal-body>.rbac-modal-footer{display:flex;align-items:center;justify-content:flex-start;gap:10px}.align-left-table th,.align-left-table td,.result-table th,.result-table td,.collect-table th,.collect-table td{text-align:left!important}.align-left-table th{vertical-align:middle}@media (max-width:720px){.rbac-role-drawer .rbac-modal-body{grid-template-rows:auto auto auto auto auto auto}.rbac-role-tab-frame{height:auto;min-height:0}.rbac-role-tab-panel{height:auto;min-height:0!important}}
 </style>

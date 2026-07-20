@@ -75,6 +75,7 @@ func defaultParseRules() map[string]ParseRule {
 }
 
 func (h *Handler) listParserPlugins(w http.ResponseWriter, r *http.Request) {
+	principal := h.currentPrincipal(r.Context())
 	counts := map[string]int{}
 	h.mu.RLock()
 	for _, rule := range h.parseRules {
@@ -84,7 +85,12 @@ func (h *Handler) listParserPlugins(w http.ResponseWriter, r *http.Request) {
 		counts[rule.ParserPlugin]++
 	}
 	h.mu.RUnlock()
-	plugins := parserPluginCatalog(counts)
+	plugins := make([]ParserPlugin, 0)
+	for _, item := range parserPluginCatalog(counts) {
+		if principal.AllowsPlugin("use", item.PluginType, item.PluginCode) {
+			plugins = append(plugins, item)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
 }
 
@@ -145,6 +151,7 @@ func (h *Handler) getParseRule(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createParseRule(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+	principal := h.currentPrincipal(r.Context())
 	rule, apiErr := decodeParseRule(r, true)
 	if apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
@@ -153,6 +160,9 @@ func (h *Handler) createParseRule(w http.ResponseWriter, r *http.Request) {
 	normalized, apiErr := h.normalizeParseRule(rule, "", true)
 	if apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
+		return
+	}
+	if !h.authorizePluginScope(w, r, principal, "use", "parser", normalized.ParserPlugin) {
 		return
 	}
 	if err := h.persistParseRule(r, normalized); err != nil {
@@ -164,6 +174,7 @@ func (h *Handler) createParseRule(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateParseRule(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+	principal := h.currentPrincipal(r.Context())
 	id := strings.TrimSpace(r.PathValue("id"))
 	if _, ok := h.findParseRule(id); !ok {
 		writeErrorCode(w, http.StatusNotFound, "PARSE_RULE_NOT_FOUND", "parse rule not found")
@@ -177,6 +188,9 @@ func (h *Handler) updateParseRule(w http.ResponseWriter, r *http.Request) {
 	normalized, apiErr := h.normalizeParseRule(rule, id, true)
 	if apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
+		return
+	}
+	if !h.authorizePluginScope(w, r, principal, "use", "parser", normalized.ParserPlugin) {
 		return
 	}
 	if err := h.persistParseRule(r, normalized); err != nil {
@@ -240,6 +254,7 @@ func (h *Handler) deleteParseRule(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) testParseRule(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+	principal := h.currentPrincipal(r.Context())
 	rule, apiErr := decodeParseRule(r, false)
 	if apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
@@ -248,6 +263,9 @@ func (h *Handler) testParseRule(w http.ResponseWriter, r *http.Request) {
 	normalized, apiErr := h.normalizeParseRule(rule, strings.TrimSpace(r.PathValue("id")), false)
 	if apiErr != nil {
 		writeErrorCode(w, apiErr.status, apiErr.code, apiErr.message)
+		return
+	}
+	if !h.authorizePluginScope(w, r, principal, "use", "parser", normalized.ParserPlugin) {
 		return
 	}
 	fields, err := previewParseRule(normalized)

@@ -48,8 +48,8 @@ Options:
 
 Environment overrides:
   XDP_AUTH_USERNAME=admin
-  XDP_AUTH_PASSWORD=xdp
-  XDP_API_TOKEN=xdp-dev-token
+  XDP_AUTH_PASSWORD=<password>
+  XDP_API_TOKEN=<token>
   FRONTEND_PORT=5173
   XDP_AGENT_ADDR=127.0.0.1:8081
   XDP_KAFKA_BROKERS=127.0.0.1:9092
@@ -126,8 +126,8 @@ refresh_agent_urls() {
 require_command() {
   local command_name="$1"
   if ! command -v "$command_name" >/dev/null 2>&1; then
-    printf 'required command not found: %s\n' "$command_name" >&2
-    exit 1
+    printf 'missing required command: %s\n' "$command_name" >&2
+    exit 4
   fi
 }
 
@@ -157,8 +157,8 @@ write_compose_override() {
   printf '== write auth compose override ==\n'
   printf 'XDP_AUTH_ENABLED=true\n'
   printf 'XDP_AUTH_USERNAME=%s\n' "$AUTH_USERNAME"
-  printf 'XDP_AUTH_PASSWORD=%s\n' "$AUTH_PASSWORD"
-  printf 'XDP_API_TOKEN=%s\n' "$AUTH_TOKEN"
+  printf 'XDP_AUTH_PASSWORD=<redacted>\n'
+  printf 'XDP_API_TOKEN=<redacted>\n'
   printf 'XDP_AGENT_BASE_URL=%s\n' "$API_AGENT_BASE_URL"
   if [ "$DRY_RUN" = "1" ]; then
     printf 'write %s\n' "$OVERRIDE_FILE"
@@ -276,6 +276,15 @@ reset_test_environment() {
     return 0
   fi
   printf '== reset test environment ==\n'
+  if [ "$DRY_RUN" = "1" ]; then
+    print_cmd env \
+      "COMPOSE_FILE=$COMPOSE_FILE" \
+      "CLICKHOUSE_URL=$CLICKHOUSE_URL" \
+      "CLICKHOUSE_USER=$CLICKHOUSE_USER" \
+      "CLICKHOUSE_PASSWORD=<redacted>" \
+      "bash" "scripts/reset-test-env.sh"
+    return 0
+  fi
   run_env \
     COMPOSE_FILE="$COMPOSE_FILE" \
     CLICKHOUSE_URL="$CLICKHOUSE_URL" \
@@ -297,6 +306,10 @@ start_dependencies() {
 
 run_clickhouse_migrations() {
   printf '== migrate clickhouse ==\n'
+  if [ "$DRY_RUN" = "1" ]; then
+    print_cmd env "CLICKHOUSE_URL=$CLICKHOUSE_URL" "CLICKHOUSE_USER=$CLICKHOUSE_USER" "CLICKHOUSE_PASSWORD=<redacted>" "bash" "scripts/migrate-clickhouse.sh"
+    return 0
+  fi
   run_env CLICKHOUSE_URL="$CLICKHOUSE_URL" CLICKHOUSE_USER="$CLICKHOUSE_USER" CLICKHOUSE_PASSWORD="$CLICKHOUSE_PASSWORD" bash scripts/migrate-clickhouse.sh
 }
 
@@ -409,8 +422,8 @@ start_host_agent() {
       "XDP_AGENT_ADDR=$HOST_AGENT_ADDR" \
       "XDP_KAFKA_BROKERS=$HOST_AGENT_KAFKA_BROKERS" \
       "XDP_CONFIG_API=$HOST_AGENT_CONFIG_API" \
-      "XDP_CONFIG_API_TOKEN=$AUTH_TOKEN" \
-      "XDP_API_TOKEN=$AUTH_TOKEN" \
+      "XDP_CONFIG_API_TOKEN=<redacted>" \
+      "XDP_API_TOKEN=<redacted>" \
       "XDP_CONFIG_RELOAD_INTERVAL=$HOST_AGENT_RELOAD_INTERVAL" \
       "$HOST_AGENT_BIN"
     printf 'write %s\n' "$CACHE_DIR/agent.pid"
@@ -436,7 +449,7 @@ start_frontend_console() {
   if [ "$DRY_RUN" = "1" ]; then
     printf 'cd web/console && npm run dev -- --host %s --port %s\n' "$FRONTEND_HOST" "$FRONTEND_PORT"
     printf 'http://127.0.0.1:%s\n' "$FRONTEND_PORT"
-    printf 'admin / xdp\n'
+    printf 'Login:    %s / <redacted>\n' "$AUTH_USERNAME"
     return 0
   fi
 
@@ -467,8 +480,8 @@ XDP one-click stack is running.
 Frontend: http://127.0.0.1:$FRONTEND_PORT
 API:      $API_BASE
 Agent:    $API_AGENT_BASE_URL
-Login:    $AUTH_USERNAME / $AUTH_PASSWORD
-Token:    $AUTH_TOKEN
+Login:    $AUTH_USERNAME / <redacted>
+Token:    <redacted>
 
 Logs:
   Agent:    $LOG_DIR/agent.log

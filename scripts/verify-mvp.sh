@@ -9,8 +9,18 @@ BASE=${BASE:-http://$ADDR}
 GOCACHE=${GOCACHE:-"$ROOT/.cache/go-build"}
 GOMODCACHE=${GOMODCACHE:-"$ROOT/.cache/go-mod"}
 GOPATH=${GOPATH:-"$ROOT/.cache/go-path"}
-LOG=${XDP_API_LOG:-/tmp/xdp-api-verify.log}
+LOG=${XDP_API_LOG:-"$ROOT/.cache/verify-mvp/api.log"}
 BIN=${XDP_API_BIN:-"$ROOT/build/verify/xdp-api"}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 4
+  }
+}
+
+require_cmd curl
+require_cmd go
 
 mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOPATH"
 mkdir -p "$(dirname "$BIN")"
@@ -58,4 +68,4 @@ done
 printf '\n== acceptance ==\n'
 BASE="$BASE" bash "$ROOT/scripts/acceptance.sh"
 
-printf '\nMVP verification passed.\n'
+printf '\nPASS TC-MVP-VERIFY-001 MVP verification passed\n'

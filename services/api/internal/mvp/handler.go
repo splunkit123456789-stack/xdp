@@ -114,6 +114,7 @@ func NewHandler(logger *slog.Logger) http.Handler {
 							Source:       "env_seed",
 						})
 					}
+					_ = client.EnsureRBACSeeds(ctx)
 					mysqlClient = client
 					cancel()
 					break
@@ -166,56 +167,74 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.health)
 	h.mux.HandleFunc("GET /readyz", h.health)
 	h.mux.HandleFunc("GET /metrics", h.prometheus)
-	h.mux.HandleFunc("GET /api/v1/writer/runtime", h.writerRuntime)
+	h.mux.HandleFunc("GET /api/v1/writer/runtime", h.withPermission("index:read", h.writerRuntime))
 	h.mux.HandleFunc("GET /api/v1/auth", h.authStatus)
 	h.mux.HandleFunc("POST /api/v1/login", h.login)
-	h.mux.HandleFunc("GET /api/v1/plugins", h.listPlugins)
-	h.mux.HandleFunc("GET /api/v1/plugins/catalog", h.listPluginCatalog)
-	h.mux.HandleFunc("POST /api/v1/plugins/import", h.importPlugin)
-	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}", h.getPlugin)
-	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}/schema", h.getPluginSchema)
-	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}/execution-audits", h.getPluginExecutionAudits)
-	h.mux.HandleFunc("POST /api/v1/plugins/{plugin_code}/enable", h.enablePlugin)
-	h.mux.HandleFunc("POST /api/v1/plugins/{plugin_code}/disable", h.disablePlugin)
-	h.mux.HandleFunc("DELETE /api/v1/plugins/{plugin_code}", h.deletePlugin)
-	h.mux.HandleFunc("GET /api/v1/input-plugins", h.listInputPlugins)
-	h.mux.HandleFunc("GET /api/v1/parser-plugins", h.listParserPlugins)
-	h.mux.HandleFunc("GET /api/v1/pipelines", h.listPipelines)
-	h.mux.HandleFunc("GET /api/v1/runtime/pipelines", h.listRuntimePipelines)
-	h.mux.HandleFunc("POST /api/v1/pipelines", h.savePipeline)
-	h.mux.HandleFunc("GET /api/v1/indexes", h.listIndexes)
-	h.mux.HandleFunc("POST /api/v1/indexes/snapshots", h.sampleIndexSnapshots)
-	h.mux.HandleFunc("POST /api/v1/indexes", h.saveIndex)
-	h.mux.HandleFunc("DELETE /api/v1/indexes", h.deleteIndex)
-	h.mux.HandleFunc("GET /api/v1/indexes/{index_name}", h.getIndex)
-	h.mux.HandleFunc("PUT /api/v1/indexes/{index_name}", h.updateIndex)
-	h.mux.HandleFunc("PATCH /api/v1/indexes/{index_name}/ttl", h.updateIndexTTL)
-	h.mux.HandleFunc("GET /api/v1/indexes/{index_name}/trend", h.getIndexTrend)
-	h.mux.HandleFunc("DELETE /api/v1/indexes/{index_name}", h.deleteIndexPath)
-	h.mux.HandleFunc("GET /api/v1/datasources", h.listDataSources)
-	h.mux.HandleFunc("POST /api/v1/datasources/port-check", h.checkDataSourcePort)
-	h.mux.HandleFunc("POST /api/v1/datasources/connectivity-check", h.checkDataSourceConnectivity)
-	h.mux.HandleFunc("POST /api/v1/datasources", h.saveDataSource)
-	h.mux.HandleFunc("GET /api/v1/datasources/{id}", h.getDataSource)
-	h.mux.HandleFunc("PUT /api/v1/datasources/{id}", h.updateDataSource)
-	h.mux.HandleFunc("PATCH /api/v1/datasources/{id}/status", h.updateDataSourceStatus)
-	h.mux.HandleFunc("GET /api/v1/datasources/{id}/runtime", h.getDataSourceRuntime)
-	h.mux.HandleFunc("DELETE /api/v1/datasources/{id}", h.deleteDataSource)
-	h.mux.HandleFunc("GET /api/v1/parse-rules", h.listParseRules)
-	h.mux.HandleFunc("POST /api/v1/parse-rules", h.createParseRule)
-	h.mux.HandleFunc("GET /api/v1/parse-rules/{id}", h.getParseRule)
-	h.mux.HandleFunc("PUT /api/v1/parse-rules/{id}", h.updateParseRule)
-	h.mux.HandleFunc("PATCH /api/v1/parse-rules/{id}/status", h.updateParseRuleStatus)
-	h.mux.HandleFunc("DELETE /api/v1/parse-rules/{id}", h.deleteParseRule)
-	h.mux.HandleFunc("POST /api/v1/parse-rules/{id}/test", h.testParseRule)
-	h.mux.HandleFunc("GET /api/v1/search", h.search)
-	h.mux.HandleFunc("GET /api/v1/search/fields", h.searchFields)
-	h.mux.HandleFunc("GET /api/v1/search/timeline", h.searchTimeline)
-	h.mux.HandleFunc("GET /api/v1/search/favorites", h.listSavedSearches)
-	h.mux.HandleFunc("POST /api/v1/search/favorites", h.createSavedSearch)
-	h.mux.HandleFunc("DELETE /api/v1/search/favorites/{id}", h.deleteSavedSearch)
-	h.mux.HandleFunc("GET /api/v1/deadletters", h.deadletters)
-	h.mux.HandleFunc("POST /api/v1/deadletters/retry", h.retryDeadletter)
+	h.mux.HandleFunc("GET /api/v1/me", h.withAuthenticatedPrincipal(h.getCurrentUser))
+	h.mux.HandleFunc("GET /api/v1/users", h.withPermission("rbac:manage", h.listUsers))
+	h.mux.HandleFunc("POST /api/v1/users", h.withPermission("rbac:manage", h.createUser))
+	h.mux.HandleFunc("GET /api/v1/users/{id}", h.withPermission("rbac:manage", h.getUser))
+	h.mux.HandleFunc("PUT /api/v1/users/{id}", h.withPermission("rbac:manage", h.updateUser))
+	h.mux.HandleFunc("DELETE /api/v1/users/{id}", h.withPermission("rbac:manage", h.deleteUser))
+	h.mux.HandleFunc("PUT /api/v1/users/{id}/password", h.withPermission("rbac:manage", h.resetUserPassword))
+	h.mux.HandleFunc("PUT /api/v1/users/{id}/roles", h.withPermission("rbac:manage", h.setUserRoles))
+	h.mux.HandleFunc("GET /api/v1/roles", h.withPermission("rbac:manage", h.listRoles))
+	h.mux.HandleFunc("POST /api/v1/roles", h.withPermission("rbac:manage", h.createRole))
+	h.mux.HandleFunc("GET /api/v1/roles/{id}", h.withPermission("rbac:manage", h.getRole))
+	h.mux.HandleFunc("PUT /api/v1/roles/{id}", h.withPermission("rbac:manage", h.updateRole))
+	h.mux.HandleFunc("DELETE /api/v1/roles/{id}", h.withPermission("rbac:manage", h.deleteRole))
+	h.mux.HandleFunc("GET /api/v1/permissions", h.withPermission("rbac:manage", h.listPermissions))
+	h.mux.HandleFunc("GET /api/v1/tokens", h.withPermission("token:read", h.listTokens))
+	h.mux.HandleFunc("POST /api/v1/tokens", h.withPermission("token:create", h.createToken))
+	h.mux.HandleFunc("DELETE /api/v1/tokens/{id}", h.withPermission("token:revoke", h.revokeToken))
+	h.mux.HandleFunc("GET /api/v1/audit-logs", h.withPermission("audit:read", h.listAuthAuditLogs))
+	h.mux.HandleFunc("GET /api/v1/plugins", h.withAuthenticatedPrincipal(h.listPlugins))
+	h.mux.HandleFunc("GET /api/v1/plugins/catalog", h.withAuthenticatedPrincipal(h.listPluginCatalog))
+	h.mux.HandleFunc("POST /api/v1/plugins/import", h.withAuthenticatedPrincipal(h.importPlugin))
+	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}", h.withAuthenticatedPrincipal(h.getPlugin))
+	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}/schema", h.withAuthenticatedPrincipal(h.getPluginSchema))
+	h.mux.HandleFunc("GET /api/v1/plugins/{plugin_code}/execution-audits", h.withAuthenticatedPrincipal(h.getPluginExecutionAudits))
+	h.mux.HandleFunc("POST /api/v1/plugins/{plugin_code}/enable", h.withAuthenticatedPrincipal(h.enablePlugin))
+	h.mux.HandleFunc("POST /api/v1/plugins/{plugin_code}/disable", h.withAuthenticatedPrincipal(h.disablePlugin))
+	h.mux.HandleFunc("DELETE /api/v1/plugins/{plugin_code}", h.withAuthenticatedPrincipal(h.deletePlugin))
+	h.mux.HandleFunc("GET /api/v1/input-plugins", h.withPermission("datasource:read", h.listInputPlugins))
+	h.mux.HandleFunc("GET /api/v1/parser-plugins", h.withPermission("parse_rule:read", h.listParserPlugins))
+	h.mux.HandleFunc("GET /api/v1/pipelines", h.withPermission("parse_rule:read", h.listPipelines))
+	h.mux.HandleFunc("GET /api/v1/runtime/pipelines", h.withPermission("parse_rule:read", h.listRuntimePipelines))
+	h.mux.HandleFunc("POST /api/v1/pipelines", h.withPermission("parse_rule:update", h.savePipeline))
+	h.mux.HandleFunc("GET /api/v1/indexes", h.withPermission("index:read", h.listIndexes))
+	h.mux.HandleFunc("POST /api/v1/indexes/snapshots", h.withPermission("index:manage", h.sampleIndexSnapshots))
+	h.mux.HandleFunc("POST /api/v1/indexes", h.withPermission("index:manage", h.saveIndex))
+	h.mux.HandleFunc("DELETE /api/v1/indexes", h.withPermission("index:manage", h.deleteIndex))
+	h.mux.HandleFunc("GET /api/v1/indexes/{index_name}", h.withPermission("index:read", h.getIndex))
+	h.mux.HandleFunc("PUT /api/v1/indexes/{index_name}", h.withPermission("index:manage", h.updateIndex))
+	h.mux.HandleFunc("PATCH /api/v1/indexes/{index_name}/ttl", h.withPermission("index:manage", h.updateIndexTTL))
+	h.mux.HandleFunc("GET /api/v1/indexes/{index_name}/trend", h.withPermission("index:read", h.getIndexTrend))
+	h.mux.HandleFunc("DELETE /api/v1/indexes/{index_name}", h.withPermission("index:manage", h.deleteIndexPath))
+	h.mux.HandleFunc("GET /api/v1/datasources", h.withPermission("datasource:read", h.listDataSources))
+	h.mux.HandleFunc("POST /api/v1/datasources/port-check", h.withAnyPermission([]string{"datasource:create", "datasource:update"}, h.checkDataSourcePort))
+	h.mux.HandleFunc("POST /api/v1/datasources/connectivity-check", h.withAnyPermission([]string{"datasource:create", "datasource:update"}, h.checkDataSourceConnectivity))
+	h.mux.HandleFunc("POST /api/v1/datasources", h.withPermission("datasource:create", h.saveDataSource))
+	h.mux.HandleFunc("GET /api/v1/datasources/{id}", h.withPermission("datasource:read", h.getDataSource))
+	h.mux.HandleFunc("PUT /api/v1/datasources/{id}", h.withPermission("datasource:update", h.updateDataSource))
+	h.mux.HandleFunc("PATCH /api/v1/datasources/{id}/status", h.withPermissionResolver(dataSourceStatusPermission, h.updateDataSourceStatus))
+	h.mux.HandleFunc("GET /api/v1/datasources/{id}/runtime", h.withPermission("datasource:read", h.getDataSourceRuntime))
+	h.mux.HandleFunc("DELETE /api/v1/datasources/{id}", h.withPermission("datasource:delete", h.deleteDataSource))
+	h.mux.HandleFunc("GET /api/v1/parse-rules", h.withPermission("parse_rule:read", h.listParseRules))
+	h.mux.HandleFunc("POST /api/v1/parse-rules", h.withPermission("parse_rule:create", h.createParseRule))
+	h.mux.HandleFunc("GET /api/v1/parse-rules/{id}", h.withPermission("parse_rule:read", h.getParseRule))
+	h.mux.HandleFunc("PUT /api/v1/parse-rules/{id}", h.withPermission("parse_rule:update", h.updateParseRule))
+	h.mux.HandleFunc("PATCH /api/v1/parse-rules/{id}/status", h.withPermission("parse_rule:update", h.updateParseRuleStatus))
+	h.mux.HandleFunc("DELETE /api/v1/parse-rules/{id}", h.withPermission("parse_rule:delete", h.deleteParseRule))
+	h.mux.HandleFunc("POST /api/v1/parse-rules/{id}/test", h.withPermission("parse_rule:test", h.testParseRule))
+	h.mux.HandleFunc("GET /api/v1/search", h.withPermission("search:execute", h.search))
+	h.mux.HandleFunc("GET /api/v1/search/fields", h.withPermission("search:execute", h.searchFields))
+	h.mux.HandleFunc("GET /api/v1/search/timeline", h.withPermission("search:execute", h.searchTimeline))
+	h.mux.HandleFunc("GET /api/v1/search/favorites", h.withPermission("search:saved_search", h.listSavedSearches))
+	h.mux.HandleFunc("POST /api/v1/search/favorites", h.withPermission("search:saved_search", h.createSavedSearch))
+	h.mux.HandleFunc("DELETE /api/v1/search/favorites/{id}", h.withPermission("search:saved_search", h.deleteSavedSearch))
+	h.mux.HandleFunc("GET /api/v1/deadletters", h.withPermission("parse_rule:read", h.deadletters))
+	h.mux.HandleFunc("POST /api/v1/deadletters/retry", h.withPermission("parse_rule:update", h.retryDeadletter))
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +251,12 @@ func (h *Handler) listPlugins(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "PLUGIN_TYPE_UNSUPPORTED", "unsupported plugin_type")
 		return
 	}
-	allPlugins := h.allCurrentPlugins(r.Context())
+	principal := h.currentPrincipal(r.Context())
+	if !principal.HasAnyPluginScope("manage", filterType) {
+		h.writePluginScopeDenied(w, r, principal, "manage", filterType, "")
+		return
+	}
+	allPlugins := filterPluginResponsesByScope(h.allCurrentPlugins(r.Context()), principal, "manage", "")
 	typeCounts := pluginTypeCounts(allPlugins)
 	plugins := filterPluginsByType(allPlugins, filterType)
 	pageItems, pagination := paginateList(plugins, r)
@@ -257,9 +281,13 @@ func (h *Handler) listPluginCatalog(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "enabled"
 	}
+	principal := h.currentPrincipal(r.Context())
 	plugins := filterPluginsByType(h.allCurrentPlugins(r.Context()), filterType)
 	filtered := make([]PluginImportResponse, 0, len(plugins))
 	for _, item := range plugins {
+		if !principal.AllowsPlugin("use", item.PluginType, item.PluginCode) {
+			continue
+		}
 		if status == "all" || (status == "enabled" && isPluginEnabled(item.Status)) || strings.EqualFold(item.Status, status) {
 			filtered = append(filtered, item)
 		}
@@ -336,6 +364,19 @@ func filterPluginsByType(items []PluginImportResponse, pluginType string) []Plug
 	return filtered
 }
 
+func filterPluginResponsesByScope(items []PluginImportResponse, principal AuthenticatedPrincipal, action string, pluginType string) []PluginImportResponse {
+	filtered := make([]PluginImportResponse, 0, len(items))
+	for _, item := range items {
+		if pluginType != "" && item.PluginType != pluginType {
+			continue
+		}
+		if principal.AllowsPlugin(action, item.PluginType, item.PluginCode) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
 func pluginTypeCounts(items []PluginImportResponse) map[string]int {
 	counts := map[string]int{
 		"input":          0,
@@ -368,6 +409,10 @@ func (h *Handler) importPlugin(w http.ResponseWriter, r *http.Request) {
 	overwrite, _ := strconv.ParseBool(strings.TrimSpace(r.URL.Query().Get("overwrite")))
 	item := manifest.toImportResponse(pluginChecksum(data))
 	item.PackageBytes = data
+	principal := h.currentPrincipal(r.Context())
+	if !h.authorizePluginScope(w, r, principal, "manage", item.PluginType, item.PluginCode) {
+		return
+	}
 	existing, exists := h.findPlugin(item.PluginType, item.PluginCode, "")
 	if exists {
 		if compareSemanticVersion(item.PluginVersion, existing.PluginVersion) <= 0 {
@@ -408,6 +453,10 @@ func (h *Handler) importPlugin(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getPlugin(w http.ResponseWriter, r *http.Request) {
 	pluginType := pluginTypeFromRequest(r)
 	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	principal := h.currentPrincipal(r.Context())
+	if !h.authorizePluginScope(w, r, principal, "manage", pluginType, code) {
+		return
+	}
 	item, ok := h.findPlugin(pluginType, code, "")
 	if !ok {
 		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
@@ -419,6 +468,10 @@ func (h *Handler) getPlugin(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getPluginSchema(w http.ResponseWriter, r *http.Request) {
 	pluginType := pluginTypeFromRequest(r)
 	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	principal := h.currentPrincipal(r.Context())
+	if !h.authorizePluginScope(w, r, principal, "manage", pluginType, code) {
+		return
+	}
 	item, ok := h.findPlugin(pluginType, code, "")
 	if !ok {
 		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
@@ -448,6 +501,10 @@ func (h *Handler) getPluginExecutionAudits(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	principal := h.currentPrincipal(r.Context())
+	if !h.authorizePluginScope(w, r, principal, "manage", pluginType, code) {
+		return
+	}
 	item, ok := h.findPlugin(pluginType, code, "")
 	if !ok {
 		writeErrorCode(w, http.StatusNotFound, "PLUGIN_NOT_FOUND", "plugin not found")
@@ -525,6 +582,10 @@ func (h *Handler) disablePlugin(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deletePlugin(w http.ResponseWriter, r *http.Request) {
 	pluginType := pluginTypeFromRequest(r)
 	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	principal := h.currentPrincipal(r.Context())
+	if !h.authorizePluginScope(w, r, principal, "manage", pluginType, code) {
+		return
+	}
 	if productVisibleBuiltinPlugin(pluginType, code) {
 		writeErrorCode(w, http.StatusConflict, "BUILTIN_PLUGIN_PROTECTED", "builtin plugin is protected")
 		return
@@ -578,6 +639,10 @@ func (h *Handler) deletePlugin(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) setPluginStatus(w http.ResponseWriter, r *http.Request, status string) {
 	pluginType := pluginTypeFromRequest(r)
 	code := strings.TrimSpace(r.PathValue("plugin_code"))
+	principal := h.currentPrincipal(r.Context())
+	if !h.authorizePluginScope(w, r, principal, "manage", pluginType, code) {
+		return
+	}
 	if productVisibleBuiltinPlugin(pluginType, code) {
 		writeErrorCode(w, http.StatusConflict, "BUILTIN_PLUGIN_PROTECTED", "builtin plugin is protected")
 		return
@@ -945,6 +1010,7 @@ func (h *Handler) savePipeline(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	principal := h.currentPrincipal(r.Context())
 	limit := ch.ParseLimit(r.URL.Query().Get("limit"), 20)
 	page := ch.ParseLimit(r.URL.Query().Get("page"), 1)
 	offset := parseNonNegative(r.URL.Query().Get("offset"), (page-1)*limit)
@@ -966,7 +1032,13 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid index")
 			return
 		}
+		if !h.authorizeSearchIndexScope(w, r, principal, query) {
+			return
+		}
 		if parsed.Stats != nil {
+			if !h.authorizePluginScope(w, r, principal, "use", "search_command", "stats") {
+				return
+			}
 			if len(parsed.Commands) > 0 {
 				h.searchStatsCommands(w, r, query, *parsed.Stats, parsed.Commands, started)
 				return
@@ -983,6 +1055,9 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid index")
 		return
 	}
+	if !h.authorizeSearchIndexScope(w, r, principal, query) {
+		return
+	}
 	events, pagination, err := h.findEvents(r.Context(), query)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "search failed")
@@ -995,6 +1070,12 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) searchCommands(w http.ResponseWriter, r *http.Request, query SearchQuery, commands []splquery.Command, started time.Time) {
+	principal := h.currentPrincipal(r.Context())
+	for _, command := range commands {
+		if !h.authorizePluginScope(w, r, principal, "use", "search_command", command.Name) {
+			return
+		}
+	}
 	fetchQuery := query
 	fetchQuery.Limit = 1000
 	fetchQuery.Offset = 0
@@ -1019,6 +1100,12 @@ func (h *Handler) searchCommands(w http.ResponseWriter, r *http.Request, query S
 }
 
 func (h *Handler) searchStatsCommands(w http.ResponseWriter, r *http.Request, query SearchQuery, stats splstats.Query, commands []splquery.Command, started time.Time) {
+	principal := h.currentPrincipal(r.Context())
+	for _, command := range commands {
+		if !h.authorizePluginScope(w, r, principal, "use", "search_command", command.Name) {
+			return
+		}
+	}
 	fetchQuery := query
 	fetchQuery.Limit = 1000
 	fetchQuery.Offset = 0

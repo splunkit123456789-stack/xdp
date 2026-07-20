@@ -23,8 +23,8 @@ REBUILD_WRITER="${XDP_WRITER_BENCHMARK_REBUILD:-0}"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    printf 'required command not found: %s\n' "$1" >&2
-    exit 1
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 4
   fi
 }
 

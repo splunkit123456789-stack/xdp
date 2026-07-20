@@ -805,6 +805,7 @@ describe("XDP Console MVP pages", () => {
     expect(bars[2].attributes("style")).toContain("height: 100%");
     expect(wrapper.get('[data-testid="result-mode"]').text()).toContain("统计视图");
     const searchResults = wrapper.get('[data-testid="search-results"]');
+    expect(searchResults.get(".result-table").classes()).toContain("align-left-table");
     const headers = searchResults.findAll("thead th").map((cell) => cell.text());
     const cells = searchResults.findAll("tbody td").map((cell) => cell.text());
     expect(headers).toEqual(["service", "total"]);
@@ -849,6 +850,7 @@ describe("XDP Console MVP pages", () => {
 
     expect(wrapper.get('[data-testid="result-mode"]').text()).toContain("表格视图");
     const searchResults = wrapper.get('[data-testid="search-results"]');
+    expect(searchResults.get(".result-table").classes()).toContain("align-left-table");
     const headers = searchResults.findAll("thead th").map((cell) => cell.text());
     const cells = searchResults.findAll("tbody td").map((cell) => cell.text());
     expect(headers).toEqual(["service", "action", "bytes"]);
@@ -986,6 +988,7 @@ describe("XDP Console MVP pages", () => {
     await flushPromises();
 
     const searchResults = wrapper.get('[data-testid="search-results"]');
+    expect(searchResults.get(".result-table").classes()).toContain("align-left-table");
     const headers = searchResults.findAll("thead th").map((cell) => cell.text());
     const cells = searchResults.findAll("tbody td").map((cell) => cell.text());
     expect(headers).toEqual(["", "时间", "事件"]);

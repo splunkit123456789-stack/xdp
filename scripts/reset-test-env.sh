@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_FILE="${COMPOSE_FILE:-deployments/docker-compose/docker-compose.yaml}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/deployments/docker-compose/docker-compose.yaml}"
 CLICKHOUSE_URL="${CLICKHOUSE_URL:-http://127.0.0.1:8123}"
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-xdp}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-xdp}"
 MYSQL_USER="${MYSQL_USER:-xdp}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-xdp}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-xdp}"
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 4
+  }
+}
 
 wait_mysql() {
   printf '== wait mysql ==\n'
@@ -87,6 +95,45 @@ TRUNCATE TABLE \`$table\`;"
   reset_sql="${reset_sql}
 SET FOREIGN_KEY_CHECKS=1;"
   docker compose -f "$COMPOSE_FILE" exec -T mysql mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" <<<"$reset_sql"
+
+  local auth_tables=(
+    auth_users
+    auth_tokens
+    auth_roles
+    auth_role_permissions
+    auth_user_roles
+    auth_role_index_scopes
+    auth_role_plugin_scopes
+  )
+  local auth_table_names
+  auth_table_names="$(printf "'%s'," "${auth_tables[@]}")"
+  auth_table_names="${auth_table_names%,}"
+  local existing_auth_tables
+  existing_auth_tables="$(docker compose -f "$COMPOSE_FILE" exec -T mysql mysql -N -B -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" \
+    -e "SELECT table_name FROM information_schema.tables WHERE table_schema = '$MYSQL_DATABASE' AND table_name IN ($auth_table_names)")"
+  local auth_table
+  local auth_tables_ready=1
+  for auth_table in "${auth_tables[@]}"; do
+    if ! printf '%s\n' "$existing_auth_tables" | grep -Fxq "$auth_table"; then
+      auth_tables_ready=0
+      break
+    fi
+  done
+  if [[ "$auth_tables_ready" -eq 1 ]]; then
+    local rbac_acceptance_cleanup_sql
+    rbac_acceptance_cleanup_sql="
+SET FOREIGN_KEY_CHECKS=0;
+DELETE ur FROM auth_user_roles ur JOIN auth_users u ON u.id = ur.user_id WHERE u.username LIKE 'accept_p2_rbac_%';
+DELETE ur FROM auth_user_roles ur JOIN auth_roles r ON r.id = ur.role_id WHERE r.builtin = 0 AND (r.role_code LIKE 'accept_p2_rbac_%' OR r.role_name IN ('P2 RBAC 受限搜索', 'P2 RBAC 采集只读'));
+DELETE rp FROM auth_role_permissions rp JOIN auth_roles r ON r.id = rp.role_id WHERE r.builtin = 0 AND (r.role_code LIKE 'accept_p2_rbac_%' OR r.role_name IN ('P2 RBAC 受限搜索', 'P2 RBAC 采集只读'));
+DELETE ris FROM auth_role_index_scopes ris JOIN auth_roles r ON r.id = ris.role_id WHERE r.builtin = 0 AND (r.role_code LIKE 'accept_p2_rbac_%' OR r.role_name IN ('P2 RBAC 受限搜索', 'P2 RBAC 采集只读'));
+DELETE rps FROM auth_role_plugin_scopes rps JOIN auth_roles r ON r.id = rps.role_id WHERE r.builtin = 0 AND (r.role_code LIKE 'accept_p2_rbac_%' OR r.role_name IN ('P2 RBAC 受限搜索', 'P2 RBAC 采集只读'));
+UPDATE auth_tokens tok JOIN auth_users u ON u.id = tok.user_id SET tok.status = 'revoked', tok.revoked_at = CURRENT_TIMESTAMP(3), tok.updated_at = CURRENT_TIMESTAMP(3) WHERE u.username LIKE 'accept_p2_rbac_%' AND tok.status <> 'revoked';
+UPDATE auth_users SET status = 'deleted', deleted_at = CURRENT_TIMESTAMP(3), updated_at = CURRENT_TIMESTAMP(3) WHERE username LIKE 'accept_p2_rbac_%' AND deleted_at IS NULL;
+UPDATE auth_roles SET status = 'deleted', deleted_at = CURRENT_TIMESTAMP(3), updated_at = CURRENT_TIMESTAMP(3) WHERE builtin = 0 AND (role_code LIKE 'accept_p2_rbac_%' OR role_name IN ('P2 RBAC 受限搜索', 'P2 RBAC 采集只读')) AND deleted_at IS NULL;
+SET FOREIGN_KEY_CHECKS=1;"
+    docker compose -f "$COMPOSE_FILE" exec -T mysql mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" <<<"$rbac_acceptance_cleanup_sql"
+  fi
   printf 'mysql reset ok\n'
 }
 
@@ -118,6 +165,11 @@ reset_kafka() {
       --bootstrap-server localhost:9092 --create --if-not-exists --topic "$topic" --partitions 1 --replication-factor 1 >/dev/null
   done
 }
+
+require_cmd docker
+require_cmd python3
+
+export CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD
 
 reset_clickhouse
 wait_mysql

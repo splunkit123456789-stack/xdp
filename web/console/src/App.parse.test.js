@@ -203,6 +203,13 @@ describe("XDP parse config API integration", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-testid="rule-form-card"]').text()).toContain("新增规则");
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="rule-form-card"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="show-rule-form"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="rule-form-card"]').text()).toContain("新增规则");
     await wrapper.get('[data-testid="cancel-rule-form"]').trigger("click");
     await flushPromises();
 

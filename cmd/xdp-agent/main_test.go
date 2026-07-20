@@ -8,6 +8,10 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
+
+	"xdp/pkg/plugin"
+	sysloginput "xdp/plugins/input/syslog"
 )
 
 func TestTopicRouterReloadUsesInternalRawTopic(t *testing.T) {
@@ -179,4 +183,39 @@ func TestAgentManagementPortCheckAcceptsAvailableUDPPort(t *testing.T) {
 	if !body.Available || body.CollectorPort != port || body.TransportProtocol != "UDP" {
 		t.Fatalf("port check response = %#v", body)
 	}
+}
+
+func TestSyslogListenerManagerClearsFailedListenerForRetry(t *testing.T) {
+	listener, err := net.ListenPacket("udp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("reserve udp port: %v", err)
+	}
+	defer listener.Close()
+	port := listener.LocalAddr().(*net.UDPAddr).Port
+
+	reg := plugin.NewRegistry()
+	must(sysloginput.Register(reg))
+	manager := newSyslogListenerManager(reg, nil)
+	spec := syslogSpec{
+		ID:       "busy-syslog",
+		Addr:     ":" + strconv.Itoa(port),
+		Protocol: "udp",
+		Name:     "Busy Syslog",
+		Topic:    "raw.ds_busy_syslog",
+	}
+	manager.reconcile(t.Context(), map[string]syslogSpec{spec.ID: spec})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		manager.mu.Lock()
+		_, exists := manager.running[spec.ID]
+		manager.mu.Unlock()
+		if !exists {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	t.Fatalf("failed syslog listener remained in running map: %#v", manager.running)
 }

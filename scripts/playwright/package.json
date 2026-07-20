@@ -1,0 +1,14 @@
+{
+  "name": "xdp-playwright-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "XDP 页面验收脚本，使用 Playwright 驱动浏览器执行端到端验收",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report reports"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}

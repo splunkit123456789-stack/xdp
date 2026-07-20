@@ -88,6 +88,13 @@ describe("XDP index config API integration", () => {
     await flushPromises();
 
     expect(wrapper.get('[data-testid="index-form-card"]').text()).toContain("新增索引");
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="index-form-card"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="show-index-form"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="index-form-card"]').text()).toContain("新增索引");
     await wrapper.get('[data-testid="cancel-index-form"]').trigger("click");
     await flushPromises();
 

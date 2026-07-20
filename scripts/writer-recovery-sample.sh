@@ -13,6 +13,13 @@ RECOVERY_INDEX="${RECOVERY_INDEX:-writer_recovery}"
 TOTAL_EVENTS="${TOTAL_EVENTS:-20}"
 POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-90}"
 
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 4
+  }
+}
+
 clickhouse_query() {
   local sql="$1"
   python3 - "$sql" <<'PY'
@@ -112,6 +119,10 @@ poll_rows() {
     sleep 1
   done
 }
+
+require_cmd docker
+require_cmd curl
+require_cmd python3
 
 export CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD
 wait_ready

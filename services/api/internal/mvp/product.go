@@ -229,11 +229,14 @@ func (h *Handler) validToken(ctx context.Context, token string) bool {
 	if h.mysql != nil {
 		ok, err := h.mysql.ValidateAuthToken(ctx, hashAuthSecret(token))
 		if err == nil {
-			return ok
+			if ok {
+				return true
+			}
+			return h.envTokenMatches(token)
 		}
 		h.logger.Warn("validate auth token from mysql failed", "error", err)
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(h.auth.Token)) == 1
+	return h.envTokenMatches(token)
 }
 
 func (h *Handler) validCredentials(ctx context.Context, username string, password string) bool {
@@ -244,10 +247,21 @@ func (h *Handler) validCredentials(ctx context.Context, username string, passwor
 	if h.mysql != nil {
 		ok, err := h.mysql.ValidateAuthCredentials(ctx, username, password)
 		if err == nil {
-			return ok
+			if ok {
+				return true
+			}
+			return h.envCredentialsMatch(username, password)
 		}
 		h.logger.Warn("validate auth credentials from mysql failed", "error", err)
 	}
+	return h.envCredentialsMatch(username, password)
+}
+
+func (h *Handler) envTokenMatches(token string) bool {
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(strings.TrimSpace(h.auth.Token))) == 1
+}
+
+func (h *Handler) envCredentialsMatch(username string, password string) bool {
 	return subtle.ConstantTimeCompare([]byte(username), []byte(h.auth.Username)) == 1 &&
 		subtle.ConstantTimeCompare([]byte(password), []byte(h.auth.Password)) == 1
 }
@@ -258,6 +272,7 @@ func (h *Handler) authStatus(w http.ResponseWriter, r *http.Request) {
 		"login_required": h.auth.Enabled,
 		"authenticated":  !h.auth.Enabled || h.validToken(r.Context(), tokenFromRequest(r)),
 		"auth_type":      "password_token",
+		"rbac_enabled":   h.mysql != nil,
 		"token_type":     "Bearer",
 		"token_header":   "Authorization",
 		"public_paths":   publicPaths(),
@@ -909,8 +924,15 @@ func (h *Handler) writerRuntime(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listIndexes(w http.ResponseWriter, r *http.Request) {
+	principal := h.currentPrincipal(r.Context())
 	indexes := h.mergedIndexSummaries(r.Context())
-	pageItems, pagination := paginateList(indexes, r)
+	filtered := make([]IndexSummary, 0, len(indexes))
+	for _, item := range indexes {
+		if principal.AllowsIndexRead(item.IndexName) {
+			filtered = append(filtered, item)
+		}
+	}
+	pageItems, pagination := paginateList(filtered, r)
 	writeJSON(w, http.StatusOK, map[string]any{"indexes": pageItems, "pagination": pagination})
 }
 
@@ -992,6 +1014,7 @@ func (h *Handler) updateIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) saveIndexConfig(w http.ResponseWriter, r *http.Request, pathIndex string) {
+	principal := h.currentPrincipal(r.Context())
 	defer r.Body.Close()
 	var req IndexConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1012,6 +1035,9 @@ func (h *Handler) saveIndexConfig(w http.ResponseWriter, r *http.Request, pathIn
 	indexName, err := ch.NormalizeIndexName(req.IndexName)
 	if err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid index_name")
+		return
+	}
+	if !h.authorizeIndexScope(w, r, principal, "manage", indexName) {
 		return
 	}
 	if ch.IsSystemIndexName(indexName) {
@@ -1063,8 +1089,12 @@ func (h *Handler) saveIndexConfig(w http.ResponseWriter, r *http.Request, pathIn
 }
 
 func (h *Handler) getIndex(w http.ResponseWriter, r *http.Request) {
+	principal := h.currentPrincipal(r.Context())
 	indexName, ok := h.indexNameFromPath(w, r)
 	if !ok {
+		return
+	}
+	if !h.authorizeIndexReadScope(w, r, principal, indexName) {
 		return
 	}
 	for _, item := range h.mergedIndexSummaries(r.Context()) {
@@ -1077,8 +1107,12 @@ func (h *Handler) getIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateIndexTTL(w http.ResponseWriter, r *http.Request) {
+	principal := h.currentPrincipal(r.Context())
 	indexName, ok := h.indexNameFromPath(w, r)
 	if !ok {
+		return
+	}
+	if !h.authorizeIndexScope(w, r, principal, "manage", indexName) {
 		return
 	}
 	defer r.Body.Close()
@@ -1125,8 +1159,12 @@ func (h *Handler) updateIndexTTL(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getIndexTrend(w http.ResponseWriter, r *http.Request) {
+	principal := h.currentPrincipal(r.Context())
 	indexName, ok := h.indexNameFromPath(w, r)
 	if !ok {
+		return
+	}
+	if !h.authorizeIndexReadScope(w, r, principal, indexName) {
 		return
 	}
 	if os.Getenv("XDP_OUTPUT") != "clickhouse" {
@@ -1283,6 +1321,7 @@ func (h *Handler) deleteIndexPath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteIndexByName(w http.ResponseWriter, r *http.Request, rawIndex string) {
+	principal := h.currentPrincipal(r.Context())
 	if rawIndex == "" {
 		writeError(w, http.StatusBadRequest, "index is required")
 		return
@@ -1290,6 +1329,9 @@ func (h *Handler) deleteIndexByName(w http.ResponseWriter, r *http.Request, rawI
 	indexName, err := ch.NormalizeIndexName(rawIndex)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid index")
+		return
+	}
+	if !h.authorizeIndexScope(w, r, principal, "manage", indexName) {
 		return
 	}
 	if ch.IsSystemIndexName(indexName) {
@@ -1506,6 +1548,9 @@ func (h *Handler) searchFields(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.authorizeSearchIndexScope(w, r, h.currentPrincipal(r.Context()), query) {
+		return
+	}
 	query.Offset = 0
 	events, _, err := h.findEvents(r.Context(), query)
 	if err != nil {
@@ -1565,6 +1610,9 @@ func eventMetadataFields(e *event.Event) map[string]any {
 func (h *Handler) searchTimeline(w http.ResponseWriter, r *http.Request) {
 	query, ok := h.searchQueryFromRequest(w, r, 1000)
 	if !ok {
+		return
+	}
+	if !h.authorizeSearchIndexScope(w, r, h.currentPrincipal(r.Context()), query) {
 		return
 	}
 	query.Offset = 0

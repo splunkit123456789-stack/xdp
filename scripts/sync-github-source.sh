@@ -4,6 +4,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${XDP_GITHUB_DIR:-$ROOT_DIR/xdp-github-release}"
 
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 4
+  }
+}
+
+require_cmd rsync
+require_cmd find
+require_cmd du
+
 if [ "$TARGET_DIR" = "$ROOT_DIR" ] || [ "$TARGET_DIR" = "/" ]; then
   printf 'refusing to sync into unsafe target: %s\n' "$TARGET_DIR" >&2
   exit 1
@@ -14,6 +25,7 @@ mkdir -p "$TARGET_DIR"
 
 rsync -a --delete \
   --include='/README.md' \
+  --include='/CHANGELOG.md' \
   --include='/build/' \
   --include='/build/plugin-packages/' \
   --include='/build/plugin-packages/kafka-input-sample.zip' \
@@ -44,9 +56,14 @@ rsync -a --delete \
   --exclude='*/.DS_Store' \
   "$ROOT_DIR/" "$TARGET_DIR/"
 
-markdown_files="$(find "$TARGET_DIR" -name '*.md' -print)"
-if [ "$markdown_files" != "$TARGET_DIR/README.md" ]; then
-  printf 'unexpected markdown files in %s:\n%s\n' "$TARGET_DIR" "$markdown_files" >&2
+unexpected_markdown_files="$(
+  find "$TARGET_DIR" -name '*.md' \
+    ! -path "$TARGET_DIR/README.md" \
+    ! -path "$TARGET_DIR/CHANGELOG.md" \
+    -print
+)"
+if [ -n "$unexpected_markdown_files" ]; then
+  printf 'unexpected markdown files in %s:\n%s\n' "$TARGET_DIR" "$unexpected_markdown_files" >&2
   exit 1
 fi
 
